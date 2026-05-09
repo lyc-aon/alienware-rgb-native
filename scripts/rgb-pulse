@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# rgb-pulse — universal hook entry for the Alienware RGB event system.
+#
+# Usage:
+#   rgb-pulse <event_id>              # preset lookup, event color, throttle + focus-skip
+#   rgb-pulse <event_id> --force      # bypass focus-skip; still safety-throttled
+#   rgb-pulse <event_id> --color RRGGBB  # override the project-derived color
+#   rgb-pulse <event_id> --throttle N    # override event-specific throttle seconds
+#   rgb-pulse <event_id> --session ID     # explicit session id (defaults to TTY+cwd hash)
+#
+# Reads optional JSON on stdin from any runtime hook. Recognized keys:
+#   .session_id, .cwd, .project_dir — used for project color + throttle key.
+#
+# Behavior:
+#   1. Check throttle files under $XDG_RUNTIME_DIR.
+#      Silent exit if touched within <throttle> seconds.
+#   2. If not --force, check if the caller's terminal is the active window
+#      (via xdotool). If yes, silent exit — you're watching it.
+#   3. Use configured RGB, or hash project path (md5) → HSV fallback color.
+#   4. Invoke alienware_rgb_cli apply-color with effect + duration from the
+#      event table.
+#   5. Optionally play a cached TTS voice line.
+
+set -u
+
+DEFAULT_CLI="$(command -v alienware_rgb_cli 2>/dev/null || true)"
+CLI="${ALIENWARE_RGB_CLI:-${RGB_CLI:-${DEFAULT_CLI:-alienware_rgb_cli}}}"
+CONFIG_DIR="${ALIENWARE_RGB_CONFIG_DIR:-$HOME/.config/alienware-rgb}"
+VOICE_CFG="$CONFIG_DIR/voice.json"
+EVENT_CFG="$CONFIG_DIR/runtime_events.json"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+LOCK_FILE="$STATE_DIR/rgb-pulse.lock"
+DISABLE_FILE="${RGB_PULSE_DISABLE_FILE:-$CONFIG_DIR/runtime-disabled}"
+
+if [[ -f "$DISABLE_FILE" ]]; then
+    exit 0
+fi
+
+# ── Event table: event_id → (effect, duration_sec, force_by_default)
+# Format: "event_id|effect|duration|force"
+# force=1 means attention-worthy: bypass focus-skip, but not safety throttles.
+EVENT_TABLE=(
+    "starter-circuit|circuit|5|0"
+    "starter-comet|comet|4|0"
+    "starter-split-wave|split-wave|5|0"
+    "starter-rainbow-cycle|rainbow-cycle|6|0"
+    "starter-plasma|plasma|5|0"
+    "starter-bounce|bounce|4|0"
+    "starter-warmup|warmup|4|1"
+    "starter-alert|triple-blink|3|1"
+)
+
+# ── Parse args
+event_id=""
+force=0
+override_color=""
+throttle_sec=""
+throttle_from_cli=0
+override_session=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)     force=1; shift ;;
+        --color)     override_color="$2"; shift 2 ;;
+        --throttle)  throttle_sec="$2"; throttle_from_cli=1; shift 2 ;;
+        --session)   override_session="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,17p' "$0" | sed 's/^# //;s/^#//'
+            exit 0 ;;
+        *)
+            if [[ -z "$event_id" ]]; then event_id="$1"; else
+                echo "unknown arg: $1" >&2; exit 2
+            fi
+            shift ;;
+    esac
+done
+if [[ -z "$event_id" ]]; then
+    echo "usage: rgb-pulse <event_id> [--force] [--color RRGGBB] [--throttle N]" >&2
+    exit 2
+fi
+
+if [[ -f "$EVENT_CFG" ]] && command -v jq >/dev/null 2>&1; then
+    while IFS= read -r pattern; do
+        [[ -z "$pattern" ]] && continue
+        if [[ "$event_id" == $pattern ]]; then
+            exit 0
+        fi
+    done < <(jq -r '.disabled_events[]? // empty' "$EVENT_CFG" 2>/dev/null)
+fi
+
+# ── Read optional JSON on stdin from an automation hook. Non-blocking.
+stdin_json=""
+if [[ ! -t 0 ]]; then
+    stdin_json="$(timeout 0.2 cat 2>/dev/null || true)"
+fi
+
+hook_session_id=""
+hook_cwd=""
+hook_project_dir=""
+if [[ -n "$stdin_json" ]] && command -v jq >/dev/null 2>&1; then
+    hook_session_id="$(echo "$stdin_json" | jq -r '.session_id // empty' 2>/dev/null)"
+    hook_cwd="$(echo "$stdin_json" | jq -r '.cwd // empty' 2>/dev/null)"
+    hook_project_dir="$(echo "$stdin_json" | jq -r '.project_dir // empty' 2>/dev/null)"
+fi
+
+# ── Look up event
+effect="pulse"
+duration=1
+table_force=0
+known_event=0
+zones_spec="all"
+meta_rgb=""
+meta_priority=""
+meta_throttle=""
+for row in "${EVENT_TABLE[@]}"; do
+    IFS='|' read -r id eff dur f <<< "$row"
+    if [[ "$id" == "$event_id" ]]; then
+        effect="$eff"; duration="$dur"; table_force="$f"
+        known_event=1
+        break
+    fi
+done
+
+if [[ -f "$EVENT_CFG" ]] && command -v jq >/dev/null 2>&1; then
+    cfg_known="$(jq -r --arg id "$event_id" 'if (.events[$id] | type) == "object" then "1" else "0" end' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_effect="$(jq -r --arg id "$event_id" '.events[$id].effect // empty' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_duration="$(jq -r --arg id "$event_id" '.events[$id].duration // .events[$id].duration_sec // empty' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_force="$(jq -r --arg id "$event_id" 'if (.events[$id] | type == "object" and has("force")) then .events[$id].force else "" end' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_priority="$(jq -r --arg id "$event_id" '.events[$id].priority // empty' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_throttle="$(jq -r --arg id "$event_id" '.events[$id].throttle // empty' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_zones="$(jq -r --arg id "$event_id" '.events[$id].zones // empty' "$EVENT_CFG" 2>/dev/null || true)"
+    cfg_rgb="$(jq -r --arg id "$event_id" '(.events[$id].rgb // []) | if type == "array" and length == 3 then join(",") else "" end' "$EVENT_CFG" 2>/dev/null || true)"
+
+    [[ "${cfg_known:-0}" == "1" ]] && known_event=1
+    [[ -n "${cfg_effect:-}" ]] && effect="$cfg_effect"
+    [[ "${cfg_duration:-}" =~ ^[0-9]+$ ]] && duration="$cfg_duration"
+    case "${cfg_force:-}" in
+        true|1) table_force=1 ;;
+        false|0) table_force=0 ;;
+    esac
+    [[ -n "${cfg_priority:-}" ]] && meta_priority="$cfg_priority"
+    [[ "${cfg_throttle:-}" =~ ^[0-9]+$ ]] && meta_throttle="$cfg_throttle"
+    [[ -n "${cfg_zones:-}" ]] && zones_spec="$cfg_zones"
+    [[ -n "${cfg_rgb:-}" ]] && meta_rgb="$cfg_rgb"
+fi
+
+if [[ "$known_event" -ne 1 ]]; then
+    exit 0
+fi
+
+# Merge force from CLI + table
+[[ "$table_force" -eq 1 ]] && force=1
+
+# ── Event priority and default throttles
+event_class="normal"
+case "$event_id" in
+    *-alert|*-needs-you|*-error|*-tool-err|*-compacting)
+        event_class="critical"
+        ;;
+    *-online|*-offline|*-idle|*-turn|*-cmd-failed|*-aborted|*-waiting)
+        event_class="low"
+        ;;
+esac
+case "$meta_priority" in
+    critical|normal|low) event_class="$meta_priority" ;;
+esac
+
+if [[ "$throttle_from_cli" -eq 0 && -n "$meta_throttle" ]]; then
+    throttle_sec="$meta_throttle"
+fi
+
+if [[ -z "$throttle_sec" ]]; then
+    case "$event_id" in
+        *-online|*-offline) throttle_sec=300 ;;
+        *-cmd-failed)       throttle_sec=120 ;;
+        *-turn|*-idle|*-waiting) throttle_sec=30 ;;
+        *-needs-you|*-error|*-tool-err|*-compacting) throttle_sec=20 ;;
+        *) throttle_sec=20 ;;
+    esac
+fi
+
+if ! [[ "$throttle_sec" =~ ^[0-9]+$ ]]; then
+    echo "invalid --throttle value: $throttle_sec" >&2
+    exit 2
+fi
+
+case "$event_class" in
+    critical) global_cooldown_sec=3 ;;
+    normal)   global_cooldown_sec=8 ;;
+    low)      global_cooldown_sec=20 ;;
+esac
+
+# ── Session id for throttle
+session="$override_session"
+if [[ -z "$session" ]]; then
+    session="${hook_session_id:-}"
+fi
+if [[ -z "$session" ]]; then
+    src="${hook_cwd:-${PWD}}$(tty 2>/dev/null || echo '')"
+    session="$(echo -n "$src" | md5sum | head -c 12)"
+fi
+
+# ── Broker fast path
+# When rgb-event-broker is running, it owns queueing, coalescing, cooldowns,
+# hardware dispatch, and voice policy. If enqueue fails, keep the direct path
+# below as a compatibility fallback.
+broker_fifo="${RGB_BROKER_FIFO:-$STATE_DIR/rgb-event-broker.fifo}"
+if [[ "${RGB_PULSE_DIRECT:-0}" != "1" && -p "$broker_fifo" ]] && command -v jq >/dev/null 2>&1; then
+    request_json="$(jq -nc \
+        --arg event_id "$event_id" \
+        --arg session "$session" \
+        --arg cwd "${hook_cwd:-}" \
+	        --arg project_dir "${hook_project_dir:-}" \
+	        --arg pwd "$PWD" \
+	        --arg override_color "$override_color" \
+	        --arg zones "$zones_spec" \
+	        --argjson force "$force" \
+	        --argjson throttle_sec "$throttle_sec" \
+	        --argjson caller_pid "$PPID" \
+	        --argjson client_pid "$$" \
+	        '{event_id:$event_id, session:$session, cwd:$cwd, project_dir:$project_dir, pwd:$pwd, override_color:$override_color, zones:$zones, force:($force == 1), throttle_sec:$throttle_sec, caller_pid:$caller_pid, client_pid:$client_pid}')"
+    if timeout 0.2 bash -c 'printf "%s\n" "$1" > "$2"' _ "$request_json" "$broker_fifo" 2>/dev/null; then
+        exit 0
+    fi
+fi
+
+if [[ "${RGB_PULSE_REQUIRE_BROKER:-0}" == "1" ]]; then
+    exit 75
+fi
+
+# ── Active-window skip (non-critical events only)
+if [[ "$force" -ne 1 ]] && command -v xdotool >/dev/null 2>&1; then
+    # If the active window's PID is an ancestor of our parent, we're in focus.
+    active_pid="$(xdotool getactivewindow getwindowpid 2>/dev/null || echo 0)"
+    if [[ "$active_pid" != "0" ]]; then
+        # Walk up the process tree from $PPID; if we hit active_pid, skip.
+        pid=$PPID
+        hops=0
+        while [[ "$pid" != "1" && "$hops" -lt 8 ]]; do
+            if [[ "$pid" == "$active_pid" ]]; then
+                exit 0
+            fi
+            pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+            [[ -z "$pid" ]] && break
+            hops=$((hops + 1))
+        done
+    fi
+fi
+
+# ── Safety throttle check
+lock_held=0
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -w 1 9; then
+        exit 0
+    fi
+    lock_held=1
+fi
+
+now_epoch="$(date +%s)"
+global_file="$STATE_DIR/rgb-pulse-global.ts"
+throttle_file="$STATE_DIR/rgb-pulse-$session-$event_id.ts"
+
+if [[ "$global_cooldown_sec" -gt 0 && -f "$global_file" ]]; then
+    age=$(( now_epoch - $(stat -c %Y "$global_file" 2>/dev/null || echo 0) ))
+    if [[ "$age" -lt "$global_cooldown_sec" ]]; then
+        exit 0
+    fi
+fi
+
+if [[ "$throttle_sec" -gt 0 ]]; then
+    if [[ -f "$throttle_file" ]]; then
+        age=$(( now_epoch - $(stat -c %Y "$throttle_file" 2>/dev/null || echo 0) ))
+        if [[ "$age" -lt "$throttle_sec" ]]; then
+            exit 0  # silent skip
+        fi
+    fi
+    touch "$throttle_file"
+fi
+
+if [[ "$global_cooldown_sec" -gt 0 ]]; then
+    touch "$global_file"
+fi
+
+[[ "$lock_held" -eq 1 ]] && flock -u 9
+
+# ── Color selection
+# Prefix colors are optional; configured event RGB wins first.
+PREFIX_COLORS=()
+
+if [[ -n "$override_color" ]]; then
+    hex="${override_color#\#}"
+    R=$((16#${hex:0:2})); G=$((16#${hex:2:2})); B=$((16#${hex:4:2}))
+elif [[ -n "$meta_rgb" ]]; then
+    IFS=',' read -r R G B <<< "$meta_rgb"
+else
+    # Check if this event has a fixed prefix color.
+    prefix_matched=0
+    for ac in "${PREFIX_COLORS[@]}"; do
+        IFS='|' read -r prefix ar ag ab <<< "$ac"
+        if [[ "$event_id" == "${prefix}-"* ]]; then
+            R=$ar; G=$ag; B=$ab
+            prefix_matched=1
+            break
+        fi
+    done
+
+    if [[ "$prefix_matched" -eq 0 ]]; then
+        # Event without configured RGB or prefix color gets a project-hash color.
+        project_src="${hook_project_dir:-${hook_cwd:-${PWD}}}"
+        md5="$(echo -n "$project_src" | md5sum | cut -c1-6)"
+        h=$((16#${md5:0:2}))
+        s=$((16#${md5:2:2}))
+        v=$((16#${md5:4:2}))
+        [[ "$s" -lt 180 ]] && s=$((180 + (s % 76)))
+        [[ "$v" -lt 200 ]] && v=$((200 + (v % 56)))
+        read -r R G B <<< "$(python3 -c "
+import colorsys
+h=$h/255.0; s=$s/255.0; v=$v/255.0
+r,g,b=colorsys.hsv_to_rgb(h,s,v)
+print(int(r*255), int(g*255), int(b*255))
+")"
+    fi
+fi
+
+# ── Fire the light
+"$CLI" apply-color \
+    --zones "$zones_spec" \
+    --rgb "$R,$G,$B" \
+    --flash-duration "$duration" \
+    --effect "$effect" \
+    >/dev/null 2>&1 &
+
+# ── Voice coupling
+if [[ -f "$VOICE_CFG" ]] && command -v jq >/dev/null 2>&1; then
+    voice_enabled="$(jq -r '.enabled // false' "$VOICE_CFG" 2>/dev/null)"
+    if [[ "$voice_enabled" == "true" ]]; then
+        # Check voice schedule (time-of-day window)
+        voice_ok=1
+        sched_enabled="$(jq -r '.voice_schedule.enabled // false' "$VOICE_CFG" 2>/dev/null)"
+        if [[ "$sched_enabled" == "true" ]]; then
+            now_mins=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+            active_start="$(jq -r '.voice_schedule.active_start // "00:00"' "$VOICE_CFG" 2>/dev/null)"
+            active_end="$(jq -r '.voice_schedule.active_end // "23:59"' "$VOICE_CFG" 2>/dev/null)"
+            start_mins=$(( 10#${active_start%%:*} * 60 + 10#${active_start##*:} ))
+            end_mins=$(( 10#${active_end%%:*} * 60 + 10#${active_end##*:} ))
+            if [[ "$start_mins" -le "$end_mins" ]]; then
+                # Normal window: 08:00-23:00
+                [[ "$now_mins" -lt "$start_mins" || "$now_mins" -ge "$end_mins" ]] && voice_ok=0
+            else
+                # Overnight window: e.g. 22:00-06:00
+                [[ "$now_mins" -ge "$end_mins" && "$now_mins" -lt "$start_mins" ]] && voice_ok=0
+            fi
+        fi
+
+        if [[ "$voice_ok" -eq 1 ]]; then
+            is_silent="$(jq --arg id "$event_id" '.silent_events // [] | index($id)' "$VOICE_CFG" 2>/dev/null)"
+            if [[ "$is_silent" == "null" ]]; then
+                voice_dir="$(jq -r '.output_dir // empty' "$VOICE_CFG" 2>/dev/null)"
+                voice_dir="${voice_dir/#\~/$HOME}"
+                audio=""
+                [[ -f "$voice_dir/$event_id.mp3" ]] && audio="$voice_dir/$event_id.mp3"
+                [[ -z "$audio" && -f "$voice_dir/$event_id.wav" ]] && audio="$voice_dir/$event_id.wav"
+                if [[ -n "$audio" ]]; then
+                    if [[ "$audio" == *.mp3 ]] && command -v ffplay >/dev/null 2>&1; then
+                        ffplay -nodisp -autoexit -loglevel quiet "$audio" >/dev/null 2>&1 &
+                    elif command -v aplay >/dev/null 2>&1; then
+                        aplay -q "$audio" >/dev/null 2>&1 &
+                    fi
+                fi
+            fi
+        fi
+    fi
+fi
+
+exit 0

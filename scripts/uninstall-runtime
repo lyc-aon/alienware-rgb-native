@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN_DIR="${ALIENWARE_RGB_BIN_DIR:-$HOME/bin}"
+CONFIG_DIR="${ALIENWARE_RGB_CONFIG_DIR:-$HOME/.config/alienware-rgb}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DATA_DIR="${ALIENWARE_RGB_DATA_DIR:-$DATA_HOME/alienware-rgb}"
+MODULE_DIR="${ALIENWARE_RGB_MODULE_DIR:-$DATA_DIR/modules}"
+SYSTEMD_USER_DIR="${ALIENWARE_RGB_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+APPLICATIONS_DIR="${ALIENWARE_RGB_APPLICATIONS_DIR:-$HOME/.local/share/applications}"
+DESKTOP_DIR="${ALIENWARE_RGB_DESKTOP_DIR:-$HOME/Desktop}"
+
+DRY_RUN=0
+PURGE_CONFIG=0
+SYSTEMCTL_ACTIONS=1
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/uninstall-runtime [options]
+
+Removes installed Alienware RGB runtime artifacts:
+  - user-systemd broker unit and retired legacy units
+  - binaries and runtime helper scripts from BIN_DIR
+  - desktop launcher entries
+  - install manifest and retired module files
+
+Config under CONFIG_DIR is preserved by default so calibrated maps, voice
+policy, and event snapshots can be reinstalled later. Use --purge-config only
+when intentionally deleting that state.
+
+Options:
+  --dry-run             print intended actions without writing files
+  --purge-config        also delete CONFIG_DIR
+  --no-systemctl        remove files but do not call systemctl
+  --bin-dir DIR         override script/binary destination
+  --config-dir DIR      override runtime config destination
+  --data-dir DIR        override runtime data destination
+  --systemd-dir DIR     override user-systemd unit destination
+  --applications-dir DIR
+                         override application launcher destination
+  --desktop-dir DIR     override desktop shortcut destination
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --purge-config) PURGE_CONFIG=1; shift ;;
+        --no-systemctl) SYSTEMCTL_ACTIONS=0; shift ;;
+        --bin-dir) BIN_DIR="$2"; shift 2 ;;
+        --config-dir) CONFIG_DIR="$2"; shift 2 ;;
+        --data-dir) DATA_DIR="$2"; MODULE_DIR="$2/modules"; shift 2 ;;
+        --systemd-dir) SYSTEMD_USER_DIR="$2"; shift 2 ;;
+        --applications-dir) APPLICATIONS_DIR="$2"; shift 2 ;;
+        --desktop-dir) DESKTOP_DIR="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+log() {
+    printf '[uninstall-runtime] %s\n' "$*"
+}
+
+run() {
+    if [[ "$DRY_RUN" == "1" ]]; then
+        printf '[dry-run] '
+        printf '%q ' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+remove_file_if_present() {
+    local path="$1"
+    if [[ -e "$path" || "$DRY_RUN" == "1" ]]; then
+        log "remove $path"
+        if [[ "$DRY_RUN" != "1" ]]; then
+            rm -f -- "$path"
+        fi
+    fi
+}
+
+remove_dir_if_empty() {
+    local path="$1"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "remove empty dir $path"
+        return
+    fi
+    rmdir --ignore-fail-on-non-empty "$path" 2>/dev/null || true
+}
+
+retire_unit() {
+    local unit="$1"
+    if [[ "$SYSTEMCTL_ACTIONS" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
+        run systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    fi
+    remove_file_if_present "$SYSTEMD_USER_DIR/$unit"
+}
+
+retire_units_matching() {
+    local pattern="$1"
+    local path
+    for path in "$SYSTEMD_USER_DIR"/$pattern; do
+        [[ -e "$path" ]] || continue
+        retire_unit "$(basename "$path")"
+    done
+}
+
+runtime_files=(
+    alienware_rgb_cli
+    alienware_rgb
+    rgb-pulse
+    rgb-event-broker
+    runtime-smoke
+    collect-diagnostics
+    rgb-pulse-notif
+    rgb-pulse-posttool
+    check-disk-space.sh
+    docker-event-watcher
+)
+for name in "${runtime_files[@]}"; do
+    remove_file_if_present "$BIN_DIR/$name"
+done
+
+module_files=(
+    audio_viz.py
+    common.py
+    dbus_notifs.py
+    music_mood.py
+    network_pulse.py
+    pomodoro.py
+    system_metrics.py
+    weather_ambient.py
+)
+for name in "${module_files[@]}"; do
+    remove_file_if_present "$MODULE_DIR/$name"
+done
+
+retire_unit "rgb-event-broker.service"
+retire_unit "alienware-rgb-onfailure.service"
+retire_unit "alienware-rgb-disk-check.service"
+retire_unit "alienware-rgb-disk-check.timer"
+retire_unit "alienware-rgb-audio-viz.service"
+retire_unit "alienware-rgb-system-metrics.service"
+retire_unit "alienware-rgb-dbus-notifs.service"
+retire_unit "alienware-rgb-music-mood.service"
+retire_unit "alienware-rgb-weather-ambient.service"
+retire_unit "alienware-rgb-network-pulse.service"
+retire_units_matching "alienware-rgb-schedule-*"
+
+remove_file_if_present "$APPLICATIONS_DIR/alienware-rgb.desktop"
+remove_file_if_present "$DESKTOP_DIR/Alienware RGB.desktop"
+remove_file_if_present "$DATA_DIR/icons/alienware-rgb.png"
+remove_file_if_present "$DATA_DIR/install-manifest.json"
+
+if [[ "$PURGE_CONFIG" == "1" ]]; then
+    if [[ -e "$CONFIG_DIR" || "$DRY_RUN" == "1" ]]; then
+        log "purge config $CONFIG_DIR"
+        if [[ "$DRY_RUN" != "1" ]]; then
+            rm -rf -- "$CONFIG_DIR"
+        fi
+    fi
+else
+    log "preserve config $CONFIG_DIR"
+fi
+
+remove_dir_if_empty "$MODULE_DIR"
+remove_dir_if_empty "$DATA_DIR/icons"
+remove_dir_if_empty "$DATA_DIR"
+
+if [[ "$SYSTEMCTL_ACTIONS" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
+    run systemctl --user daemon-reload
+fi
+
+log "runtime uninstall complete"

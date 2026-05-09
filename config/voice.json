@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "output_dir": "~/.local/share/alienware-rgb/voice",
+  "phrases": {},
+  "silent_events": [],
+  "voice_schedule": {
+    "active_end": "23:00",
+    "active_start": "08:00",
+    "enabled": false
+  }
+}

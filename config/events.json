@@ -1,0 +1,100 @@
+{
+  "events": [
+    {
+      "id": "starter-circuit",
+      "name": "Starter - side circuit",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        0,
+        190,
+        255
+      ],
+      "effect": "circuit",
+      "duration_sec": 5
+    },
+    {
+      "id": "starter-comet",
+      "name": "Starter - comet trace",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        40,
+        255,
+        190
+      ],
+      "effect": "comet",
+      "duration_sec": 4
+    },
+    {
+      "id": "starter-split-wave",
+      "name": "Starter - split wave",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        255,
+        205,
+        60
+      ],
+      "effect": "split-wave",
+      "duration_sec": 5
+    },
+    {
+      "id": "starter-rainbow-cycle",
+      "name": "Starter - rainbow cycle",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "effect": "rainbow-cycle",
+      "duration_sec": 6
+    },
+    {
+      "id": "starter-plasma",
+      "name": "Starter - plasma flow",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        150,
+        95,
+        255
+      ],
+      "effect": "plasma",
+      "duration_sec": 5
+    },
+    {
+      "id": "starter-bounce",
+      "name": "Starter - scanner bounce",
+      "zones": "group:Side Panel Strip",
+      "rgb": [
+        255,
+        80,
+        70
+      ],
+      "effect": "bounce",
+      "duration_sec": 4
+    },
+    {
+      "id": "starter-warmup",
+      "name": "Starter - full warmup",
+      "zones": "all",
+      "rgb": [
+        0,
+        160,
+        255
+      ],
+      "effect": "warmup",
+      "duration_sec": 4
+    },
+    {
+      "id": "starter-alert",
+      "name": "Starter - full alert",
+      "zones": "all",
+      "rgb": [
+        255,
+        70,
+        40
+      ],
+      "effect": "triple-blink",
+      "duration_sec": 3
+    }
+  ]
+}

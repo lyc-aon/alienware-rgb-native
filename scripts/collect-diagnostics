@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI="${ALIENWARE_RGB_CLI:-$(command -v alienware_rgb_cli 2>/dev/null || true)}"
+if [[ -z "$CLI" && -x "$ROOT/build/alienware_rgb_cli" ]]; then
+  CLI="$ROOT/build/alienware_rgb_cli"
+fi
+
+CONFIG_DIR="${ALIENWARE_RGB_CONFIG_DIR:-$HOME/.config/alienware-rgb}"
+BIN_DIR="${ALIENWARE_RGB_BIN_DIR:-}"
+SYSTEMD_USER_DIR="${ALIENWARE_RGB_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DATA_DIR="${ALIENWARE_RGB_DATA_DIR:-$DATA_HOME/alienware-rgb}"
+APPLICATIONS_DIR="${ALIENWARE_RGB_APPLICATIONS_DIR:-$HOME/.local/share/applications}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+OUT_PARENT="${ALIENWARE_RGB_DIAG_DIR:-$HOME/Desktop}"
+ARCHIVE=1
+INCLUDE_JOURNAL=1
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/collect-diagnostics [options]
+
+Collects a redacted Alienware RGB support bundle with doctor output, config
+snapshots, installed unit files, service state, recent logs, and runtime status.
+
+Options:
+  --output DIR       write the bundle directory under DIR
+  --cli PATH         use a specific alienware_rgb_cli binary
+  --config-dir DIR   use a specific runtime config directory
+  --no-archive       leave only the directory; do not create .tar.gz
+  --no-journal       skip journalctl collection
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output) OUT_PARENT="$2"; shift 2 ;;
+    --cli) CLI="$2"; shift 2 ;;
+    --config-dir) CONFIG_DIR="$2"; shift 2 ;;
+    --no-archive) ARCHIVE=0; shift ;;
+    --no-journal) INCLUDE_JOURNAL=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$BIN_DIR" && -n "$CLI" ]]; then
+  BIN_DIR="$(cd "$(dirname "$CLI")" && pwd)"
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)"
+bundle="$OUT_PARENT/alienware-rgb-diagnostics-$stamp"
+mkdir -p "$bundle"/{config,logs,systemd,status}
+
+log() {
+  printf '[collect-diagnostics] %s\n' "$*"
+}
+
+capture() {
+  local dest="$1"
+  shift
+  {
+    printf '$'
+    printf ' %q' "$@"
+    printf '\n\n'
+    "$@"
+    rc=$?
+    printf '\n[exit %s]\n' "$rc"
+  } >"$dest" 2>&1 || true
+}
+
+redact_json() {
+  local src="$1" dest="$2"
+  python3 - "$src" "$dest" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dest = Path(sys.argv[2])
+secret_key = re.compile(r"(api[_-]?key|token|secret|password|credential|auth)", re.I)
+secret_value = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|[A-Za-z0-9_=-]{32,})")
+
+def scrub(value, key=""):
+    if secret_key.search(key):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {k: scrub(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub(v, key) for v in value]
+    if isinstance(value, str):
+        return secret_value.sub("[REDACTED]", value)
+    return value
+
+try:
+    data = json.loads(src.read_text(encoding="utf-8"))
+    dest.write_text(json.dumps(scrub(data), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+except Exception as exc:
+    dest.write_text(f"unreadable or invalid json: {exc}\n", encoding="utf-8")
+PY
+}
+
+copy_redacted_config() {
+  local name="$1"
+  local src="$CONFIG_DIR/$name"
+  if [[ -f "$src" ]]; then
+    redact_json "$src" "$bundle/config/$name"
+  else
+    printf 'missing: %s\n' "$src" >"$bundle/config/$name.missing"
+  fi
+}
+
+cat >"$bundle/README.txt" <<EOF
+Alienware RGB diagnostics
+created_at: $(date -Is)
+host: $(hostname)
+repo: $ROOT
+cli: ${CLI:-missing}
+config_dir: $CONFIG_DIR
+bin_dir: ${BIN_DIR:-unknown}
+data_dir: $DATA_DIR
+systemd_user_dir: $SYSTEMD_USER_DIR
+runtime_dir: $RUNTIME_DIR
+
+This bundle redacts common key/token/secret/password fields and high-entropy
+secret-looking string values from JSON config files. Review before sharing.
+EOF
+
+{
+  echo "date: $(date -Is)"
+  echo "uname: $(uname -a)"
+  echo "shell: ${SHELL:-unknown}"
+  echo "user: $(id)"
+  echo "repo: $ROOT"
+  git -C "$ROOT" status --short --branch 2>/dev/null || true
+  git -C "$ROOT" rev-parse HEAD 2>/dev/null || true
+  git -C "$ROOT" log --oneline -5 2>/dev/null || true
+} >"$bundle/status/environment.txt" 2>&1
+
+if [[ -n "$CLI" && -x "$CLI" ]]; then
+  doctor_env=(
+    env
+    "ALIENWARE_RGB_CONFIG_DIR=$CONFIG_DIR"
+    "ALIENWARE_RGB_BIN_DIR=$BIN_DIR"
+    "ALIENWARE_RGB_DATA_DIR=$DATA_DIR"
+    "ALIENWARE_RGB_SYSTEMD_USER_DIR=$SYSTEMD_USER_DIR"
+    "ALIENWARE_RGB_APPLICATIONS_DIR=$APPLICATIONS_DIR"
+  )
+  capture "$bundle/status/doctor.txt" "${doctor_env[@]}" "$CLI" doctor
+  if ! "${doctor_env[@]}" "$CLI" doctor --json \
+      >"$bundle/status/doctor.json" 2>"$bundle/status/doctor-json.stderr"; then
+    python3 - "$CLI" >"$bundle/status/doctor.json" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "ok": False,
+    "error": "doctor --json failed",
+    "cli": sys.argv[1],
+}, indent=2, sort_keys=True))
+PY
+  fi
+  if [[ ! -s "$bundle/status/doctor-json.stderr" ]]; then
+    rm -f "$bundle/status/doctor-json.stderr"
+  fi
+  capture "$bundle/status/cli-help.txt" "$CLI" --help
+else
+  printf 'alienware_rgb_cli not found or not executable: %s\n' "${CLI:-missing}" >"$bundle/status/doctor.txt"
+  python3 - "${CLI:-missing}" >"$bundle/status/doctor.json" <<'PY'
+import json
+import sys
+
+print(json.dumps({
+    "ok": False,
+    "error": "alienware_rgb_cli not found or not executable",
+    "cli": sys.argv[1],
+}, indent=2, sort_keys=True))
+PY
+fi
+
+copy_redacted_config events.json
+copy_redacted_config runtime_events.json
+copy_redacted_config voice.json
+copy_redacted_config zone_map.json
+
+if [[ -f "$DATA_DIR/install-manifest.json" ]]; then
+  cp "$DATA_DIR/install-manifest.json" "$bundle/status/install-manifest.json"
+else
+  printf 'missing: %s\n' "$DATA_DIR/install-manifest.json" >"$bundle/status/install-manifest.json.missing"
+fi
+
+if [[ -f "$RUNTIME_DIR/rgb-event-broker.status.json" ]]; then
+  redact_json "$RUNTIME_DIR/rgb-event-broker.status.json" "$bundle/status/rgb-event-broker.status.json"
+else
+  printf 'missing: %s\n' "$RUNTIME_DIR/rgb-event-broker.status.json" >"$bundle/status/rgb-event-broker.status.json.missing"
+fi
+
+for unit in \
+  rgb-event-broker.service
+do
+  if [[ -f "$SYSTEMD_USER_DIR/$unit" ]]; then
+    cp "$SYSTEMD_USER_DIR/$unit" "$bundle/systemd/$unit"
+  fi
+done
+
+if command -v systemctl >/dev/null 2>&1; then
+  capture "$bundle/status/systemctl-units.txt" \
+    systemctl --user list-units --all '*rgb*' '*alienware*' --no-pager
+  capture "$bundle/status/systemctl-unit-files.txt" \
+    systemctl --user list-unit-files '*rgb*' '*alienware*' --no-pager
+  capture "$bundle/status/rgb-event-broker-status.txt" \
+    systemctl --user status rgb-event-broker.service --no-pager
+fi
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  mapfile -t unit_paths < <(find "$bundle/systemd" -maxdepth 1 -type f | sort)
+  if [[ "${#unit_paths[@]}" -gt 0 ]]; then
+    capture "$bundle/status/systemd-verify.txt" systemd-analyze --user verify "${unit_paths[@]}"
+  fi
+fi
+
+if [[ "$INCLUDE_JOURNAL" == "1" && "${ALIENWARE_RGB_DIAG_NO_JOURNAL:-0}" != "1" ]] && command -v journalctl >/dev/null 2>&1; then
+  capture "$bundle/logs/rgb-event-broker.log" \
+    journalctl --user -u rgb-event-broker.service -n 300 --no-pager -o short-iso
+  capture "$bundle/logs/alienware-rgb-units.log" \
+    journalctl --user -n 300 --no-pager -o short-iso -g 'alienware-rgb|rgb-event-broker'
+else
+  printf 'journal collection skipped\n' >"$bundle/logs/journal-skipped.txt"
+fi
+
+find "$bundle" -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum >"$bundle/manifest.sha256"
+
+if [[ "$ARCHIVE" == "1" ]]; then
+  archive="$bundle.tar.gz"
+  tar -C "$(dirname "$bundle")" -czf "$archive" "$(basename "$bundle")"
+  log "wrote $archive"
+else
+  log "wrote $bundle"
+fi

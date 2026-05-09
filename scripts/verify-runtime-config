@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLI="${1:-$ROOT/build/alienware_rgb_cli}"
+
+if [[ ! -x "$CLI" ]]; then
+  echo "verify-runtime-config: CLI not executable: $CLI" >&2
+  exit 2
+fi
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/alienware-rgb-config-verify.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+disable_voice_cache_requirement() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+voice = json.loads(path.read_text(encoding="utf-8"))
+
+# CI validates phrase coverage, not local user audio-cache presence.
+voice["enabled"] = False
+voice["output_dir"] = str(path.parent / "voice-cache")
+path.write_text(json.dumps(voice, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+bash -n \
+  "$ROOT/scripts/collect-diagnostics" \
+  "$ROOT/scripts/install-runtime" \
+  "$ROOT/scripts/uninstall-runtime" \
+  "$ROOT/scripts/runtime-smoke" \
+  "$ROOT/scripts/rgb-pulse" \
+  "$ROOT/scripts/verify-runtime-config"
+
+PYTHONPYCACHEPREFIX="$TMP/pycache" python3 -m py_compile \
+  "$ROOT/scripts/rgb-event-broker" \
+  "$ROOT/scripts/validate-runtime-contract" \
+  "$ROOT/scripts/test-diagnostics-redaction" \
+  "$ROOT/scripts/test-runtime-smoke" \
+  "$ROOT/scripts/test-rgb-pulse-routing" \
+  "$ROOT/scripts/test-runtime-broker"
+
+"$ROOT/scripts/validate-runtime-contract"
+"$ROOT/scripts/test-rgb-pulse-routing"
+"$ROOT/scripts/test-runtime-broker"
+"$ROOT/scripts/test-diagnostics-redaction"
+"$ROOT/scripts/test-runtime-smoke"
+
+install -m 0644 "$ROOT/config/events.json" "$TMP/events.json"
+install -m 0644 "$ROOT/config/runtime_events.json" "$TMP/runtime_events.json"
+install -m 0644 "$ROOT/config/voice.json" "$TMP/voice.json"
+install -m 0644 "$ROOT/calibration/aw3423dwf-zone-map-20260508.json" "$TMP/zone_map.json"
+
+disable_voice_cache_requirement "$TMP/voice.json"
+mkdir -p "$TMP/runtime"
+
+ALIENWARE_RGB_CONFIG_DIR="$TMP" \
+ALIENWARE_RGB_DOCTOR_RUNTIME=0 \
+ALIENWARE_RGB_DOCTOR_INSTALL=0 \
+  "$CLI" doctor
+
+XDG_RUNTIME_DIR="$TMP/runtime" ALIENWARE_RGB_CONFIG_DIR="$TMP" "$CLI" runtime-status
+XDG_RUNTIME_DIR="$TMP/runtime" ALIENWARE_RGB_CONFIG_DIR="$TMP" "$CLI" runtime-disable
+test -f "$TMP/runtime-disabled"
+XDG_RUNTIME_DIR="$TMP/runtime" ALIENWARE_RGB_CONFIG_DIR="$TMP" "$CLI" runtime-status
+XDG_RUNTIME_DIR="$TMP/runtime" ALIENWARE_RGB_CONFIG_DIR="$TMP" "$CLI" runtime-enable
+test ! -e "$TMP/runtime-disabled"
+
+INSTALL="$TMP/install"
+mkdir -p "$INSTALL/Desktop"
+mkdir -p "$INSTALL/config"
+for cfg in runtime_events.json events.json voice.json zone_map.json; do
+  printf '{"sentinel": "%s"}\n' "$cfg" >"$INSTALL/config/$cfg"
+done
+printf '{"rules": [{"name": "stale"}]}\n' >"$INSTALL/config/schedule.json"
+mkdir -p "$INSTALL/share/modules" "$INSTALL/systemd-user"
+for stale_module in \
+  audio_viz.py \
+  common.py \
+  dbus_notifs.py \
+  music_mood.py \
+  network_pulse.py \
+  pomodoro.py \
+  system_metrics.py \
+  weather_ambient.py
+do
+  printf 'stale module: %s\n' "$stale_module" >"$INSTALL/share/modules/$stale_module"
+done
+for stale_unit in \
+  alienware-rgb-audio-viz.service \
+  alienware-rgb-system-metrics.service \
+  alienware-rgb-dbus-notifs.service \
+  alienware-rgb-music-mood.service \
+  alienware-rgb-weather-ambient.service \
+  alienware-rgb-network-pulse.service
+do
+  printf 'stale unit: %s\n' "$stale_unit" >"$INSTALL/systemd-user/$stale_unit"
+done
+for stale_unit in \
+  alienware-rgb-schedule-lights-out.service \
+  alienware-rgb-schedule-lights-out.timer \
+  alienware-rgb-schedule-morning-wake.service \
+  alienware-rgb-schedule-morning-wake.timer
+do
+  printf 'stale schedule unit: %s\n' "$stale_unit" >"$INSTALL/systemd-user/$stale_unit"
+done
+
+ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+ALIENWARE_RGB_DESKTOP_DIR="$INSTALL/Desktop" \
+ALIENWARE_RGB_CLI="$CLI" \
+ALIENWARE_RGB_GUI="${CLI%_cli}" \
+  "$ROOT/scripts/install-runtime" --force-config --no-enable --no-systemctl --no-doctor
+
+for stale_module in "$INSTALL"/share/modules/*.py; do
+  if [[ -e "$stale_module" ]]; then
+    echo "verify-runtime-config: stale module was not retired: $stale_module" >&2
+    exit 3
+  fi
+done
+for stale_unit in \
+  alienware-rgb-audio-viz.service \
+  alienware-rgb-system-metrics.service \
+  alienware-rgb-dbus-notifs.service \
+  alienware-rgb-music-mood.service \
+  alienware-rgb-weather-ambient.service \
+  alienware-rgb-network-pulse.service
+do
+  if [[ -e "$INSTALL/systemd-user/$stale_unit" ]]; then
+    echo "verify-runtime-config: stale module unit was not retired: $stale_unit" >&2
+    exit 3
+  fi
+done
+if [[ -e "$INSTALL/config/schedule.json" ]]; then
+  echo "verify-runtime-config: retired schedule config was not removed" >&2
+  exit 3
+fi
+schedule_backups=( "$INSTALL/config/backups/schedule.json".retired-* )
+if [[ ! -e "${schedule_backups[0]:-}" ]]; then
+  echo "verify-runtime-config: retired schedule config was not backed up" >&2
+  exit 3
+fi
+for stale_unit in "$INSTALL"/systemd-user/alienware-rgb-schedule-*; do
+  if [[ -e "$stale_unit" ]]; then
+    echo "verify-runtime-config: stale schedule unit was not retired: $stale_unit" >&2
+    exit 3
+  fi
+done
+
+for cfg in runtime_events.json events.json voice.json zone_map.json; do
+  backups=( "$INSTALL/config/backups/$cfg".backup-* )
+  if [[ ! -e "${backups[0]:-}" ]]; then
+    echo "verify-runtime-config: missing forced-config backup for $cfg" >&2
+    exit 3
+  fi
+  if ! grep -q "\"sentinel\": \"$cfg\"" "${backups[0]}"; then
+    echo "verify-runtime-config: forced-config backup did not preserve $cfg" >&2
+    exit 3
+  fi
+done
+
+disable_voice_cache_requirement "$INSTALL/config/voice.json"
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+  mapfile -t unit_files < <(find "$INSTALL/systemd-user" -maxdepth 1 \( -name '*.service' -o -name '*.timer' \) -type f | sort)
+  systemd-analyze --user verify "${unit_files[@]}"
+fi
+
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate \
+    "$INSTALL/applications/alienware-rgb.desktop" \
+    "$INSTALL/Desktop/Alienware RGB.desktop"
+fi
+grep -F "Icon=$INSTALL/share/icons/alienware-rgb.png" "$INSTALL/applications/alienware-rgb.desktop" >/dev/null
+test -s "$INSTALL/share/icons/alienware-rgb.png"
+
+ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+  ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+  ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+  ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+  ALIENWARE_RGB_DOCTOR_RUNTIME=0 \
+  "$INSTALL/bin/alienware_rgb_cli" doctor
+
+json_doctor_output="$(
+  ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+  ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+  ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+  ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+  ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+  ALIENWARE_RGB_DOCTOR_RUNTIME=0 \
+    "$INSTALL/bin/alienware_rgb_cli" doctor --json
+)"
+if ! jq -e '
+  .ok == true
+  and .failures == 0
+  and .warnings == 0
+  and (.checks | length) >= 17
+  and any(.checks[]; .name == "broker hardening" and .status == "ok")
+  and any(.checks[]; .name == "runtime events" and .status == "ok")
+' >/dev/null <<<"$json_doctor_output"; then
+  echo "verify-runtime-config: doctor --json did not report expected healthy shape" >&2
+  printf '%s\n' "$json_doctor_output" >&2
+  exit 3
+fi
+
+
+test -f "$INSTALL/share/install-manifest.json"
+cp -p "$INSTALL/bin/rgb-pulse" "$INSTALL/bin/rgb-pulse.before-manifest-test"
+printf '\n# manifest tamper test\n' >>"$INSTALL/bin/rgb-pulse"
+set +e
+tamper_output="$(
+  ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+  ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+  ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+  ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+  ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+  ALIENWARE_RGB_DOCTOR_RUNTIME=0 \
+    "$INSTALL/bin/alienware_rgb_cli" doctor 2>&1
+)"
+tamper_code=$?
+set -e
+mv "$INSTALL/bin/rgb-pulse.before-manifest-test" "$INSTALL/bin/rgb-pulse"
+if [[ "$tamper_code" -eq 0 || "$tamper_output" != *"FAIL  install manifest"* ]]; then
+  echo "verify-runtime-config: doctor did not catch install manifest drift" >&2
+  printf '%s\n' "$tamper_output" >&2
+  exit 3
+fi
+
+XDG_RUNTIME_DIR="$TMP/runtime" \
+ALIENWARE_RGB_DIAG_NO_JOURNAL=1 \
+ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+  "$INSTALL/bin/collect-diagnostics" --output "$TMP/diagnostics" --config-dir "$INSTALL/config" --cli "$INSTALL/bin/alienware_rgb_cli" --no-archive --no-journal
+diag_bundles=( "$TMP"/diagnostics/alienware-rgb-diagnostics-* )
+test -f "${diag_bundles[0]}/status/install-manifest.json"
+jq -e '.ok == true and .failures == 0' "${diag_bundles[0]}/status/doctor.json" >/dev/null
+
+ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+ALIENWARE_RGB_DESKTOP_DIR="$INSTALL/Desktop" \
+  "$ROOT/scripts/uninstall-runtime" --no-systemctl
+
+for runtime_path in \
+  "$INSTALL/bin/alienware_rgb_cli" \
+  "$INSTALL/bin/alienware_rgb" \
+  "$INSTALL/share/icons/alienware-rgb.png" \
+  "$INSTALL/bin/rgb-pulse" \
+  "$INSTALL/bin/rgb-event-broker" \
+  "$INSTALL/bin/runtime-smoke" \
+  "$INSTALL/bin/collect-diagnostics" \
+  "$INSTALL/systemd-user/rgb-event-broker.service" \
+  "$INSTALL/applications/alienware-rgb.desktop" \
+  "$INSTALL/Desktop/Alienware RGB.desktop" \
+  "$INSTALL/share/install-manifest.json"
+do
+  if [[ -e "$runtime_path" ]]; then
+    echo "verify-runtime-config: uninstall left runtime artifact: $runtime_path" >&2
+    exit 3
+  fi
+done
+test -f "$INSTALL/config/zone_map.json"
+test -f "$INSTALL/config/runtime_events.json"
+
+ALIENWARE_RGB_BIN_DIR="$INSTALL/bin" \
+ALIENWARE_RGB_CONFIG_DIR="$INSTALL/config" \
+ALIENWARE_RGB_DATA_DIR="$INSTALL/share" \
+ALIENWARE_RGB_SYSTEMD_USER_DIR="$INSTALL/systemd-user" \
+ALIENWARE_RGB_APPLICATIONS_DIR="$INSTALL/applications" \
+ALIENWARE_RGB_DESKTOP_DIR="$INSTALL/Desktop" \
+  "$ROOT/scripts/uninstall-runtime" --no-systemctl --purge-config
+test ! -e "$INSTALL/config"

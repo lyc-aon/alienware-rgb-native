@@ -1,0 +1,429 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${ALIENWARE_RGB_BUILD_DIR:-$ROOT/build}"
+BIN_DIR="${ALIENWARE_RGB_BIN_DIR:-$HOME/bin}"
+CONFIG_DIR="${ALIENWARE_RGB_CONFIG_DIR:-$HOME/.config/alienware-rgb}"
+CONFIG_BACKUP_DIR="${ALIENWARE_RGB_CONFIG_BACKUP_DIR:-}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+DATA_DIR="${ALIENWARE_RGB_DATA_DIR:-$DATA_HOME/alienware-rgb}"
+MODULE_DIR="${ALIENWARE_RGB_MODULE_DIR:-$DATA_DIR/modules}"
+SYSTEMD_USER_DIR="${ALIENWARE_RGB_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
+APPLICATIONS_DIR="${ALIENWARE_RGB_APPLICATIONS_DIR:-$HOME/.local/share/applications}"
+DESKTOP_DIR="${ALIENWARE_RGB_DESKTOP_DIR:-$HOME/Desktop}"
+
+CLI_SRC="${ALIENWARE_RGB_CLI:-$BUILD_DIR/alienware_rgb_cli}"
+GUI_SRC="${ALIENWARE_RGB_GUI:-$BUILD_DIR/alienware_rgb}"
+ICON_SRC="${ALIENWARE_RGB_ICON:-$ROOT/assets/icons/alienware-rgb.png}"
+CLI_RUNTIME="$BIN_DIR/alienware_rgb_cli"
+GUI_RUNTIME="$BIN_DIR/alienware_rgb"
+ICON_RUNTIME="$DATA_DIR/icons/alienware-rgb.png"
+
+DRY_RUN=0
+FORCE_CONFIG=0
+ENABLE_SERVICES=1
+RESTART_SERVICES=1
+DESKTOP_SHORTCUT=1
+RUN_DOCTOR=1
+SKIP_BUILD_CHECK=0
+SYSTEMCTL_ACTIONS=1
+INSTALL_STAMP="$(date -u +%Y%m%d-%H%M%S)"
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/install-runtime [options]
+
+Installs the Alienware RGB runtime into stable user paths:
+  - binaries and runtime helper scripts into ~/bin
+  - config snapshots into ~/.config/alienware-rgb when missing
+  - user-systemd broker unit
+  - desktop application entries
+  - install-manifest.json with SHA256s for installed runtime artifacts
+
+Options:
+  --dry-run             print intended actions without writing files
+  --force-config        overwrite existing config snapshots
+                         backs up replaced configs under CONFIG_DIR/backups
+  --no-enable           write units but do not enable/start services
+  --no-restart          do not restart broker service
+  --no-desktop          skip .desktop launcher creation
+  --no-doctor           skip final alienware_rgb_cli doctor
+  --no-systemctl        write units but do not call systemctl
+  --skip-build-check    allow install even if build binaries are absent
+  --bin-dir DIR         override script/binary destination
+  --config-dir DIR      override runtime config destination
+  --config-backup-dir DIR
+                         override forced-config backup destination
+  --data-dir DIR        override runtime data destination
+  --systemd-dir DIR     override user-systemd unit destination
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --force-config) FORCE_CONFIG=1; shift ;;
+        --no-enable) ENABLE_SERVICES=0; shift ;;
+        --no-restart) RESTART_SERVICES=0; shift ;;
+        --no-desktop) DESKTOP_SHORTCUT=0; shift ;;
+        --no-doctor) RUN_DOCTOR=0; shift ;;
+        --no-systemctl) SYSTEMCTL_ACTIONS=0; shift ;;
+        --skip-build-check) SKIP_BUILD_CHECK=1; shift ;;
+        --bin-dir) BIN_DIR="$2"; CLI_RUNTIME="$2/alienware_rgb_cli"; GUI_RUNTIME="$2/alienware_rgb"; shift 2 ;;
+        --config-dir) CONFIG_DIR="$2"; shift 2 ;;
+        --config-backup-dir) CONFIG_BACKUP_DIR="$2"; shift 2 ;;
+        --data-dir) DATA_DIR="$2"; MODULE_DIR="$2/modules"; shift 2 ;;
+        --systemd-dir) SYSTEMD_USER_DIR="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ -z "$CONFIG_BACKUP_DIR" ]]; then
+    CONFIG_BACKUP_DIR="$CONFIG_DIR/backups"
+fi
+
+log() {
+    printf '[install-runtime] %s\n' "$*"
+}
+
+run() {
+    if [[ "$DRY_RUN" == "1" ]]; then
+        printf '[dry-run] '
+        printf '%q ' "$@"
+        printf '\n'
+    else
+        "$@"
+    fi
+}
+
+install_file() {
+    local src="$1" dest="$2" mode="$3"
+    if [[ ! -e "$src" ]]; then
+        echo "missing install source: $src" >&2
+        exit 2
+    fi
+    log "install $dest"
+    run install -D -m "$mode" "$src" "$dest"
+}
+
+install_config_if_needed() {
+    local src="$1" dest="$2"
+    if [[ "$FORCE_CONFIG" != "1" && -e "$dest" ]]; then
+        log "keep existing $dest"
+        return
+    fi
+    if [[ "$FORCE_CONFIG" == "1" && -e "$dest" ]]; then
+        local base backup
+        base="$(basename "$dest")"
+        backup="$CONFIG_BACKUP_DIR/$base.backup-$INSTALL_STAMP-$$"
+        log "backup $dest -> $backup"
+        if [[ "$DRY_RUN" != "1" ]]; then
+            mkdir -p "$CONFIG_BACKUP_DIR"
+            chmod 700 "$CONFIG_BACKUP_DIR" 2>/dev/null || true
+            cp -p -- "$dest" "$backup"
+            chmod go-rwx "$backup" 2>/dev/null || true
+        fi
+    fi
+    install_file "$src" "$dest" 0644
+}
+
+write_unit() {
+    local dest="$1" mode="$2"
+    log "write $dest"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        sed 's/^/[dry-run:unit] /' >/dev/null
+        return
+    fi
+    mkdir -p "$(dirname "$dest")"
+    local tmp
+    tmp="$(mktemp)"
+    cat >"$tmp"
+    install -m "$mode" "$tmp" "$dest"
+    rm -f "$tmp"
+}
+
+remove_file_if_present() {
+    local path="$1"
+    if [[ -e "$path" || "$DRY_RUN" == "1" ]]; then
+        log "remove stale $path"
+        if [[ "$DRY_RUN" != "1" ]]; then
+            rm -f -- "$path"
+        fi
+    fi
+}
+
+backup_and_remove_file_if_present() {
+    local path="$1"
+    if [[ ! -e "$path" && "$DRY_RUN" != "1" ]]; then
+        return
+    fi
+    local base backup
+    base="$(basename "$path")"
+    backup="$CONFIG_BACKUP_DIR/$base.retired-$INSTALL_STAMP-$$"
+    log "retire $path -> $backup"
+    if [[ "$DRY_RUN" != "1" ]]; then
+        mkdir -p "$CONFIG_BACKUP_DIR"
+        chmod 700 "$CONFIG_BACKUP_DIR" 2>/dev/null || true
+        cp -p -- "$path" "$backup"
+        chmod go-rwx "$backup" 2>/dev/null || true
+        rm -f -- "$path"
+    fi
+}
+
+retire_legacy_unit() {
+    local unit="$1"
+    if [[ "$SYSTEMCTL_ACTIONS" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
+        run systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    fi
+    remove_file_if_present "$SYSTEMD_USER_DIR/$unit"
+}
+
+retire_legacy_units_matching() {
+    local pattern="$1"
+    local path
+    for path in "$SYSTEMD_USER_DIR"/$pattern; do
+        [[ -e "$path" ]] || continue
+        retire_legacy_unit "$(basename "$path")"
+    done
+}
+
+write_install_manifest() {
+    if [[ "$DRY_RUN" == "1" ]]; then
+        log "write $DATA_DIR/install-manifest.json"
+        return
+    fi
+    local manifest="$DATA_DIR/install-manifest.json"
+    log "write $manifest"
+    mkdir -p "$DATA_DIR"
+    python3 - "$manifest" "$@" <<'PY'
+import datetime as dt
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+files = []
+seen = set()
+for raw in sys.argv[2:]:
+    path = Path(raw)
+    key = str(path)
+    if key in seen:
+        continue
+    seen.add(key)
+    if not path.is_file():
+        raise SystemExit(f"manifest source missing: {path}")
+    st = path.stat()
+    files.append({
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "mode": format(stat.S_IMODE(st.st_mode), "04o"),
+        "size": st.st_size,
+    })
+
+doc = {
+    "schema": 1,
+    "generated_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "files": files,
+}
+tmp = manifest.with_name(f".{manifest.name}.tmp.{os.getpid()}")
+tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(tmp, 0o644)
+os.replace(tmp, manifest)
+PY
+}
+
+wait_for_broker_status() {
+    if [[ "$DRY_RUN" == "1" ]] || ! command -v systemctl >/dev/null 2>&1; then
+        return
+    fi
+    local runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
+    local status_path="$runtime_dir/rgb-event-broker.status.json"
+    local main_pid status_pid
+    for _ in {1..30}; do
+        main_pid="$(systemctl --user show -p MainPID --value rgb-event-broker.service 2>/dev/null || true)"
+        status_pid="$(python3 - "$status_path" <<'PY' 2>/dev/null || true
+import json
+import sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        print(json.load(f).get("pid", ""))
+except Exception:
+    pass
+PY
+)"
+        if [[ "$main_pid" =~ ^[0-9]+$ && "$main_pid" -gt 1 && "$status_pid" == "$main_pid" ]]; then
+            return
+        fi
+        sleep 0.2
+    done
+    log "broker status did not settle before doctor"
+}
+
+require_binary() {
+    local path="$1" name="$2"
+    if [[ ! -x "$path" && "$SKIP_BUILD_CHECK" != "1" ]]; then
+        echo "$name is not executable at $path" >&2
+        echo "Build first: cmake -S '$ROOT' -B '$BUILD_DIR' && cmake --build '$BUILD_DIR' -j" >&2
+        exit 2
+    fi
+}
+
+require_binary "$CLI_SRC" "alienware_rgb_cli"
+require_binary "$GUI_SRC" "alienware_rgb"
+
+if [[ -x "$CLI_SRC" ]]; then
+    install_file "$CLI_SRC" "$CLI_RUNTIME" 0755
+elif command -v alienware_rgb_cli >/dev/null 2>&1; then
+    CLI_RUNTIME="$(command -v alienware_rgb_cli)"
+fi
+
+if [[ -x "$GUI_SRC" ]]; then
+    install_file "$GUI_SRC" "$GUI_RUNTIME" 0755
+elif command -v alienware_rgb >/dev/null 2>&1; then
+    GUI_RUNTIME="$(command -v alienware_rgb)"
+fi
+
+install_file "$ICON_SRC" "$ICON_RUNTIME" 0644
+
+runtime_scripts=(
+    rgb-pulse
+    rgb-event-broker
+    runtime-smoke
+    collect-diagnostics
+)
+for script in "${runtime_scripts[@]}"; do
+    install_file "$ROOT/scripts/$script" "$BIN_DIR/$script" 0755
+done
+
+for stale_script in \
+    rgb-pulse-notif \
+    rgb-pulse-posttool \
+    check-disk-space.sh \
+    docker-event-watcher
+do
+    remove_file_if_present "$BIN_DIR/$stale_script"
+done
+
+for stale_module in \
+    audio_viz.py \
+    common.py \
+    dbus_notifs.py \
+    music_mood.py \
+    network_pulse.py \
+    pomodoro.py \
+    system_metrics.py \
+    weather_ambient.py
+do
+    remove_file_if_present "$MODULE_DIR/$stale_module"
+done
+
+install_config_if_needed "$ROOT/config/runtime_events.json" "$CONFIG_DIR/runtime_events.json"
+install_config_if_needed "$ROOT/config/events.json" "$CONFIG_DIR/events.json"
+install_config_if_needed "$ROOT/config/voice.json" "$CONFIG_DIR/voice.json"
+install_config_if_needed "$ROOT/calibration/aw3423dwf-zone-map-20260508.json" "$CONFIG_DIR/zone_map.json"
+backup_and_remove_file_if_present "$CONFIG_DIR/schedule.json"
+
+write_unit "$SYSTEMD_USER_DIR/rgb-event-broker.service" 0644 <<EOF
+[Unit]
+Description=Alienware RGB runtime event broker
+After=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 "$BIN_DIR/rgb-event-broker"
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+UMask=077
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+Environment=PYTHONUNBUFFERED=1
+Environment="ALIENWARE_RGB_CLI=$CLI_RUNTIME"
+Environment="RGB_BROKER_CLI=$CLI_RUNTIME"
+Environment="RGB_PULSE=$BIN_DIR/rgb-pulse"
+Environment="ALIENWARE_RGB_CONFIG_DIR=$CONFIG_DIR"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+retire_legacy_unit "alienware-rgb-onfailure.service"
+retire_legacy_unit "alienware-rgb-disk-check.service"
+retire_legacy_unit "alienware-rgb-disk-check.timer"
+retire_legacy_unit "alienware-rgb-audio-viz.service"
+retire_legacy_unit "alienware-rgb-system-metrics.service"
+retire_legacy_unit "alienware-rgb-dbus-notifs.service"
+retire_legacy_unit "alienware-rgb-music-mood.service"
+retire_legacy_unit "alienware-rgb-weather-ambient.service"
+retire_legacy_unit "alienware-rgb-network-pulse.service"
+retire_legacy_units_matching "alienware-rgb-schedule-*"
+
+if [[ "$DESKTOP_SHORTCUT" == "1" && -n "$GUI_RUNTIME" ]]; then
+    desktop_file="$APPLICATIONS_DIR/alienware-rgb.desktop"
+    write_unit "$desktop_file" 0644 <<EOF
+[Desktop Entry]
+Type=Application
+Name=Alienware RGB
+Comment=Alienware AW-ELC RGB controller
+Exec=$GUI_RUNTIME
+Icon=$ICON_RUNTIME
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+EOF
+    if [[ -d "$DESKTOP_DIR" || "$DRY_RUN" == "1" ]]; then
+        if [[ "$DRY_RUN" == "1" ]]; then
+            log "install $DESKTOP_DIR/Alienware RGB.desktop"
+        else
+            install_file "$desktop_file" "$DESKTOP_DIR/Alienware RGB.desktop" 0755
+        fi
+    fi
+fi
+
+manifest_files=(
+    "$CLI_RUNTIME"
+    "$GUI_RUNTIME"
+    "$ICON_RUNTIME"
+)
+for script in "${runtime_scripts[@]}"; do
+    manifest_files+=( "$BIN_DIR/$script" )
+done
+manifest_files+=(
+    "$SYSTEMD_USER_DIR/rgb-event-broker.service"
+)
+if [[ "$DESKTOP_SHORTCUT" == "1" && -n "$GUI_RUNTIME" ]]; then
+    manifest_files+=( "$APPLICATIONS_DIR/alienware-rgb.desktop" )
+fi
+write_install_manifest "${manifest_files[@]}"
+
+if [[ "$SYSTEMCTL_ACTIONS" == "1" ]] && command -v systemctl >/dev/null 2>&1; then
+    run systemctl --user daemon-reload
+    run systemctl --user reset-failed rgb-event-broker.service >/dev/null 2>&1 || true
+    if [[ "$ENABLE_SERVICES" == "1" ]]; then
+        run systemctl --user enable rgb-event-broker.service
+        if [[ "$RESTART_SERVICES" == "1" ]]; then
+            run systemctl --user restart rgb-event-broker.service
+            wait_for_broker_status
+        fi
+    fi
+fi
+
+if [[ "$RUN_DOCTOR" == "1" && -x "$CLI_RUNTIME" ]]; then
+    ALIENWARE_RGB_CONFIG_DIR="$CONFIG_DIR" "$CLI_RUNTIME" doctor
+fi
+
+log "runtime install complete"

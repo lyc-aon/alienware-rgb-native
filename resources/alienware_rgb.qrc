@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="icons/alienware-rgb.png">../assets/icons/alienware-rgb.png</file>
+    </qresource>
+</RCC>

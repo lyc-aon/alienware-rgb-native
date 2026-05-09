@@ -1,0 +1,8 @@
+{
+  "model": "gpt-image-2",
+  "quality": "high",
+  "size": "1024x1024",
+  "generated_at": "2026-05-09T02:30:46.574564Z",
+  "prompt": "Create a polished Linux desktop app icon for a native application named Alienware RGB.\n\nVisual concept: a dark graphite PC tower / control-panel silhouette seen front-on at slight depth, with a vertical side-panel RGB light strip rendered as a precise circuit path. The light strip should imply individually addressable LEDs in correct ordered positions, using cyan and emerald accents with a tiny magenta/amber secondary glint. The design should feel like an enterprise-grade hardware control utility and visually pair with a Codex Sessions dark terminal app: black base, crisp cyan status lines, restrained green success accent, no playful mascot.\n\nComposition requirements:\n- square icon, centered, readable at 64px and 256px\n- simple strong silhouette, not busy, no text, no letters, no watermark\n- transparent or very dark clean background; no rounded-square app tile background\n- no exact Alienware head logo or trademarked mark; use a generic premium sci-fi PC/controller symbol\n- high contrast edges, subtle depth, polished raster icon style",
+  "source": "alienware-rgb-icon-gpt-image-2-1024.png"
+}

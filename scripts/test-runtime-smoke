@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SMOKE = ROOT / "scripts" / "runtime-smoke"
+
+
+def write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="alienware-rgb-runtime-smoke.") as tmp_raw:
+        tmp = Path(tmp_raw)
+        run = tmp / "run"
+        run.mkdir()
+        log = tmp / "calls.log"
+        status = run / "rgb-event-broker.status.json"
+        status.write_text(json.dumps({
+            "status_seq": 1,
+            "fired": 0,
+            "skipped": 0,
+            "dropped": 0,
+            "recent": [],
+        }) + "\n", encoding="utf-8")
+
+        fake_cli = tmp / "alienware_rgb_cli"
+        write_executable(fake_cli, f"""#!/usr/bin/env bash
+set -euo pipefail
+case "${{1:-}}" in
+  doctor)
+    if [[ "${{2:-}}" == "--json" ]]; then
+      printf '%s\\n' '{{"ok":true,"failures":0,"warnings":0,"checks":[{{"name":"runtime events","status":"ok","detail":"test"}}]}}'
+    else
+      printf 'summary: 0 failure(s), 0 warning(s)\\n'
+    fi
+    ;;
+  fire-event)
+    printf 'fire-event %s\\n' "${{2:-}}" >>"{log}"
+    ;;
+  *)
+    printf 'fake cli unexpected: %s\\n' "$*" >&2
+    exit 2
+    ;;
+esac
+""")
+
+        fake_pulse = tmp / "rgb-pulse"
+        write_executable(fake_pulse, f"""#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+status = Path({str(status)!r})
+event = sys.argv[1]
+session = sys.argv[sys.argv.index("--session") + 1] if "--session" in sys.argv else ""
+with Path({str(log)!r}).open("a", encoding="utf-8") as f:
+    f.write(f"rgb-pulse {{event}}\\n")
+data = json.loads(status.read_text(encoding="utf-8"))
+data["status_seq"] = int(data.get("status_seq", 0)) + 1
+data["fired"] = int(data.get("fired", 0)) + 1
+data["recent"] = [{{"event": event, "session": session, "result": "fired"}}]
+status.write_text(json.dumps(data) + "\\n", encoding="utf-8")
+""")
+
+        env = os.environ.copy()
+        env.update({
+            "ALIENWARE_RGB_CLI": str(fake_cli),
+            "RGB_PULSE": str(fake_pulse),
+            "XDG_RUNTIME_DIR": str(run),
+        })
+        proc = subprocess.run(
+            [
+                str(SMOKE),
+                "--pause", "0",
+                "--timeout", "2",
+                "--runtime-event", "starter-circuit",
+                "--events", "starter-comet,starter-alert",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+            env=env,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(f"runtime-smoke failed:\nstdout={proc.stdout}\nstderr={proc.stderr}")
+
+        calls = log.read_text(encoding="utf-8").splitlines()
+        expected = [
+            "rgb-pulse starter-circuit",
+            "fire-event starter-comet",
+            "fire-event starter-alert",
+        ]
+        if calls != expected:
+            raise AssertionError(f"unexpected smoke calls: {calls!r}")
+
+        print("runtime smoke tests: passed")
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"runtime smoke tests failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)

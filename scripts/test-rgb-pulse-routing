@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+RGB_PULSE = ROOT / "scripts" / "rgb-pulse"
+
+
+def write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def run_rgb_pulse(args: list[str], env: dict[str, str], payload: dict[str, Any] | None = None) -> subprocess.CompletedProcess[str]:
+    stdin = json.dumps(payload) if payload is not None else ""
+    return subprocess.run(
+        [str(RGB_PULSE), *args],
+        input=stdin,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+        env=env,
+    )
+
+
+def read_one_fifo_line(fifo: Path) -> tuple[queue.Queue[str], threading.Thread]:
+    lines: queue.Queue[str] = queue.Queue(maxsize=1)
+
+    def reader() -> None:
+        with fifo.open("r", encoding="utf-8") as f:
+            lines.put(f.readline().strip())
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    return lines, thread
+
+
+def main() -> int:
+    if shutil.which("jq") is None:
+        raise AssertionError("jq is required for rgb-pulse runtime config routing")
+
+    with tempfile.TemporaryDirectory(prefix="alienware-rgb-pulse-test.") as tmp_raw:
+        tmp = Path(tmp_raw)
+        config = tmp / "config"
+        run = tmp / "run"
+        run.mkdir(parents=True)
+        write_json(config / "runtime_events.json", {
+            "disabled_events": ["blocked-*"],
+            "events": {
+                "unit-fire": {
+                    "effect": "circuit",
+                    "duration": 2,
+                    "priority": "critical",
+                    "throttle": 7,
+                    "force": True,
+                    "zones": "group:Side Panel Strip",
+                    "rgb": [10, 20, 30],
+                }
+            },
+        })
+        write_json(config / "voice.json", {"enabled": False, "output_dir": str(tmp / "voice")})
+
+        env = os.environ.copy()
+        env.update({
+            "ALIENWARE_RGB_CONFIG_DIR": str(config),
+            "XDG_RUNTIME_DIR": str(run),
+            "ALIENWARE_RGB_CLI": "/bin/false",
+            "RGB_PULSE_REQUIRE_BROKER": "1",
+        })
+
+        fifo = run / "rgb-event-broker.fifo"
+        os.mkfifo(fifo, 0o600)
+        env["RGB_BROKER_FIFO"] = str(fifo)
+        lines, reader = read_one_fifo_line(fifo)
+        payload = {
+            "session_id": "payload-session",
+            "cwd": "/tmp/source-cwd",
+            "project_dir": "/tmp/project-dir",
+        }
+        proc = run_rgb_pulse(
+            ["unit-fire", "--force", "--color", "#aabbcc", "--throttle", "3"],
+            env,
+            payload,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(f"broker enqueue failed: rc={proc.returncode}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        reader.join(timeout=2)
+        try:
+            request = json.loads(lines.get_nowait())
+        except queue.Empty as exc:
+            raise AssertionError("rgb-pulse did not write to broker fifo") from exc
+
+        expected = {
+            "event_id": "unit-fire",
+            "session": "payload-session",
+            "cwd": "/tmp/source-cwd",
+            "project_dir": "/tmp/project-dir",
+            "override_color": "#aabbcc",
+            "zones": "group:Side Panel Strip",
+            "force": True,
+            "throttle_sec": 3,
+        }
+        for key, value in expected.items():
+            if request.get(key) != value:
+                raise AssertionError(f"broker request {key}={request.get(key)!r}, expected {value!r}")
+
+        (config / "runtime-disabled").write_text("disabled\n", encoding="utf-8")
+        proc = run_rgb_pulse(["unit-fire"], env)
+        if proc.returncode != 0:
+            raise AssertionError(f"runtime-disabled path should exit 0, got {proc.returncode}")
+        (config / "runtime-disabled").unlink()
+
+        env_no_fifo = dict(env)
+        env_no_fifo["RGB_BROKER_FIFO"] = str(run / "missing.fifo")
+        proc = run_rgb_pulse(["blocked-case"], env_no_fifo)
+        if proc.returncode != 0:
+            raise AssertionError(f"disabled event pattern should exit 0, got {proc.returncode}")
+
+        proc = run_rgb_pulse(["unknown-event"], env_no_fifo)
+        if proc.returncode != 0:
+            raise AssertionError(f"unknown event should exit 0, got {proc.returncode}")
+
+        proc = run_rgb_pulse(["unit-fire"], env_no_fifo)
+        if proc.returncode != 75:
+            raise AssertionError(f"require-broker without fifo should exit 75, got {proc.returncode}")
+
+        print("rgb-pulse routing tests: passed")
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"rgb-pulse routing tests failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)

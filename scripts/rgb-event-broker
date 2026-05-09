@@ -1,0 +1,676 @@
+#!/usr/bin/env python3
+"""
+rgb-event-broker - single-owner runtime event gate for Alienware RGB.
+
+All existing producers can keep calling rgb-pulse. When this broker is running,
+rgb-pulse writes compact JSON events to the broker FIFO and exits. The broker
+then owns queueing, coalescing, cooldowns, hardware dispatch, and voice policy.
+"""
+
+from __future__ import annotations
+
+import colorsys
+import datetime as dt
+import fnmatch
+import hashlib
+import json
+import os
+import queue
+import signal
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+
+HOME = Path.home()
+RUN_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+CONFIG_DIR = Path(os.environ.get("ALIENWARE_RGB_CONFIG_DIR", str(HOME / ".config" / "alienware-rgb"))).expanduser()
+EVENT_CFG = CONFIG_DIR / "runtime_events.json"
+VOICE_CFG = CONFIG_DIR / "voice.json"
+FIFO = Path(os.environ.get("RGB_BROKER_FIFO", str(RUN_DIR / "rgb-event-broker.fifo")))
+STATUS_PATH = RUN_DIR / "rgb-event-broker.status.json"
+DISABLE_FILE = Path(os.environ.get("RGB_PULSE_DISABLE_FILE", str(CONFIG_DIR / "runtime-disabled"))).expanduser()
+CLI = Path(
+    os.environ.get("RGB_BROKER_CLI")
+    or os.environ.get("ALIENWARE_RGB_CLI")
+    or shutil.which("alienware_rgb_cli")
+    or "alienware_rgb_cli"
+)
+DRY_RUN = os.environ.get("RGB_BROKER_DRY_RUN", "0") == "1"
+try:
+    STATUS_HEARTBEAT_SEC = max(0.1, min(3600.0, float(os.environ.get("RGB_BROKER_STATUS_HEARTBEAT_SEC", "5"))))
+except ValueError:
+    STATUS_HEARTBEAT_SEC = 5.0
+
+PRIORITY_RANK = {"critical": 0, "normal": 1, "low": 2}
+GLOBAL_DEFAULTS = {"critical": 3, "normal": 8, "low": 20}
+
+
+DEFAULT_PREFIX_COLORS: dict[str, list[int]] = {}
+
+
+def ev(effect: str, duration: int, priority: str = "normal", throttle: int = 20,
+       force: bool = False, voice: bool = False, zones: str = "all",
+       rgb: list[int] | None = None) -> dict[str, Any]:
+    event = {
+        "effect": effect,
+        "duration": duration,
+        "priority": priority,
+        "throttle": throttle,
+        "force": force,
+        "voice": voice,
+    }
+    if zones != "all":
+        event["zones"] = zones
+    if rgb is not None:
+        event["rgb"] = rgb
+    return event
+
+
+DEFAULT_EVENTS: dict[str, dict[str, Any]] = {
+    "starter-circuit": ev("circuit", 5, "normal", 12, zones="group:Side Panel Strip", rgb=[0, 190, 255]),
+    "starter-comet": ev("comet", 4, "normal", 12, zones="group:Side Panel Strip", rgb=[40, 255, 190]),
+    "starter-split-wave": ev("split-wave", 5, "normal", 12, zones="group:Side Panel Strip", rgb=[255, 205, 60]),
+    "starter-rainbow-cycle": ev("rainbow-cycle", 6, "low", 30, zones="group:Side Panel Strip", rgb=[255, 255, 255]),
+    "starter-plasma": ev("plasma", 5, "normal", 12, zones="group:Side Panel Strip", rgb=[150, 95, 255]),
+    "starter-bounce": ev("bounce", 4, "normal", 12, zones="group:Side Panel Strip", rgb=[255, 80, 70]),
+    "starter-warmup": ev("warmup", 4, "low", 60, True, zones="all", rgb=[0, 160, 255]),
+    "starter-alert": ev("triple-blink", 3, "critical", 20, True, zones="all", rgb=[255, 70, 40]),
+}
+
+
+def log(msg: str) -> None:
+    print(f"[rgb-event-broker] {msg}", flush=True)
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def clamp_int(value: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def load_json(path: Path, default: Any) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def write_json_atomic(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2, sort_keys=True)
+            f.write("\n")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def load_event_config() -> dict[str, Any]:
+    if not EVENT_CFG.exists():
+        write_json_atomic(EVENT_CFG, {
+            "version": 1,
+            "max_queue": 32,
+            "global_cooldown_sec": GLOBAL_DEFAULTS,
+            "prefix_colors": DEFAULT_PREFIX_COLORS,
+            "disabled_events": [],
+            "events": DEFAULT_EVENTS,
+        })
+
+    cfg = load_json(EVENT_CFG, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    disabled_events = cfg.get("disabled_events", [])
+    if not isinstance(disabled_events, list):
+        disabled_events = []
+    disabled_events = [str(pattern) for pattern in disabled_events if isinstance(pattern, str)]
+
+    events = dict(DEFAULT_EVENTS)
+    user_events = cfg.get("events", {})
+    if isinstance(user_events, dict):
+        for event_id, meta in user_events.items():
+            if isinstance(meta, dict):
+                merged = dict(events.get(event_id, ev("pulse", 1)))
+                merged.update(meta)
+                events[event_id] = merged
+    for event_id in list(events):
+        if event_disabled_by_patterns(event_id, disabled_events):
+            events.pop(event_id, None)
+
+    colors = dict(DEFAULT_PREFIX_COLORS)
+    user_colors = cfg.get("prefix_colors", {})
+    if isinstance(user_colors, dict):
+        for key, value in user_colors.items():
+            if isinstance(value, list) and len(value) == 3:
+                colors[key] = [clamp_int(v, 0, 255, 255) for v in value]
+
+    cooldown = dict(GLOBAL_DEFAULTS)
+    user_cooldown = cfg.get("global_cooldown_sec", {})
+    if isinstance(user_cooldown, dict):
+        for key in cooldown:
+            cooldown[key] = clamp_int(user_cooldown.get(key), 0, 300, cooldown[key])
+
+    return {
+        "version": 1,
+        "max_queue": clamp_int(cfg.get("max_queue"), 1, 256, 32),
+        "global_cooldown_sec": cooldown,
+        "prefix_colors": colors,
+        "disabled_events": disabled_events,
+        "events": events,
+    }
+
+
+def event_disabled_by_patterns(event_id: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(event_id, pattern) for pattern in patterns)
+
+
+def runtime_disabled() -> bool:
+    return DISABLE_FILE.exists()
+
+
+def event_meta(config: dict[str, Any], event_id: str) -> dict[str, Any]:
+    meta = config["events"].get(event_id)
+    if isinstance(meta, dict):
+        return meta
+
+    priority = "normal"
+    throttle = 20
+    force = False
+    voice = False
+    if event_id.endswith(("-online", "-offline", "-idle", "-turn", "-waiting")):
+        priority = "low"
+        throttle = 30
+    if any(event_id.endswith(s) for s in ("-needs-you", "-error", "-tool-err", "-compacting")):
+        priority = "critical"
+        throttle = 20
+        force = True
+        voice = True
+    return ev("pulse", 1, priority, throttle, force, voice)
+
+
+def request_key(req: dict[str, Any]) -> tuple[str, str]:
+    return (str(req.get("event_id", "")), str(req.get("session", "")))
+
+
+def recent_entry(req: dict[str, Any], result: str, **extra: Any) -> dict[str, Any]:
+    entry = {
+        "at": now_iso(),
+        "event": str(req.get("event_id", "")),
+        "session": str(req.get("session", "")),
+        "result": result,
+    }
+    entry.update(extra)
+    return entry
+
+
+def project_color(seed: str) -> tuple[int, int, int]:
+    digest = hashlib.md5(seed.encode("utf-8", errors="ignore")).hexdigest()
+    h = int(digest[0:2], 16) / 255.0
+    s = int(digest[2:4], 16)
+    v = int(digest[4:6], 16)
+    if s < 180:
+        s = 180 + (s % 76)
+    if v < 200:
+        v = 200 + (v % 56)
+    r, g, b = colorsys.hsv_to_rgb(h, s / 255.0, v / 255.0)
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def rgb_from_value(value: Any) -> tuple[int, int, int] | None:
+    if isinstance(value, list) and len(value) == 3:
+        return tuple(clamp_int(v, 0, 255, 255) for v in value)  # type: ignore[return-value]
+    if isinstance(value, str):
+        raw = value.strip().lstrip("#")
+        if len(raw) == 6:
+            try:
+                return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+            except ValueError:
+                return None
+        parts = [part.strip() for part in raw.split(",")]
+        if len(parts) == 3:
+            try:
+                return tuple(clamp_int(part, 0, 255, 255) for part in parts)  # type: ignore[return-value]
+            except Exception:
+                return None
+    return None
+
+
+def select_color(req: dict[str, Any], config: dict[str, Any], meta: dict[str, Any]) -> tuple[int, int, int]:
+    override = str(req.get("override_color") or "").strip().lstrip("#")
+    if len(override) == 6:
+        try:
+            return int(override[0:2], 16), int(override[2:4], 16), int(override[4:6], 16)
+        except ValueError:
+            pass
+
+    configured = rgb_from_value(meta.get("rgb"))
+    if configured is not None:
+        return configured
+
+    event_id = str(req.get("event_id", ""))
+    for prefix, color in config["prefix_colors"].items():
+        if event_id.startswith(f"{prefix}-"):
+            return tuple(color)  # type: ignore[return-value]
+
+    seed = str(req.get("project_dir") or req.get("cwd") or req.get("pwd") or HOME)
+    return project_color(seed)
+
+
+def active_window_contains(caller_pid: int) -> bool:
+    if caller_pid <= 1:
+        return False
+    try:
+        proc = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowpid"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=0.4,
+            check=False,
+        )
+        active = int((proc.stdout or "0").strip() or "0")
+    except Exception:
+        return False
+    pid = caller_pid
+    for _ in range(8):
+        if pid == active:
+            return True
+        try:
+            p = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=0.4,
+                check=False,
+            )
+            pid = int((p.stdout or "0").strip() or "0")
+        except Exception:
+            return False
+        if pid <= 1:
+            return False
+    return False
+
+
+def voice_schedule_ok(cfg: dict[str, Any]) -> bool:
+    sched = cfg.get("voice_schedule", {})
+    if not isinstance(sched, dict) or not sched.get("enabled", False):
+        return True
+
+    def to_min(value: str, fallback: str) -> int:
+        raw = value if isinstance(value, str) else fallback
+        try:
+            hour, minute = raw.split(":", 1)
+            return int(hour) * 60 + int(minute)
+        except Exception:
+            hour, minute = fallback.split(":", 1)
+            return int(hour) * 60 + int(minute)
+
+    start = to_min(sched.get("active_start", "00:00"), "00:00")
+    end = to_min(sched.get("active_end", "23:59"), "23:59")
+    n = dt.datetime.now().hour * 60 + dt.datetime.now().minute
+    if start <= end:
+        return start <= n < end
+    return n >= start or n < end
+
+
+class Broker:
+    def __init__(self) -> None:
+        self.config = load_event_config()
+        self.queue: deque[dict[str, Any]] = deque()
+        self.cv = threading.Condition()
+        self.stop = threading.Event()
+        self.last_global: dict[str, float] = {}
+        self.last_event: dict[tuple[str, str], float] = {}
+        self.last_voice: dict[str, float] = {}
+        self.stats = {
+            "started_at": now_iso(),
+            "enqueued": 0,
+            "fired": 0,
+            "dropped": 0,
+            "skipped": 0,
+            "voice_played": 0,
+        }
+        self.status_seq = 0
+        self.recent: deque[dict[str, Any]] = deque(maxlen=20)
+
+    def install_fifo(self) -> None:
+        FIFO.parent.mkdir(parents=True, exist_ok=True)
+        if FIFO.exists():
+            if not FIFO.is_fifo():
+                FIFO.unlink()
+        if not FIFO.exists():
+            os.mkfifo(FIFO, 0o600)
+
+    def write_status(self) -> None:
+        self.status_seq += 1
+        status = {
+            **self.stats,
+            "updated_at": now_iso(),
+            "status_seq": self.status_seq,
+            "heartbeat_sec": STATUS_HEARTBEAT_SEC,
+            "pid": os.getpid(),
+            "fifo": str(FIFO),
+            "runtime_disabled": runtime_disabled(),
+            "queue_depth": len(self.queue),
+            "recent": list(self.recent),
+        }
+        try:
+            write_json_atomic(STATUS_PATH, status)
+        except Exception as exc:
+            log(f"status write failed: {exc}")
+
+    def enqueue(self, req: dict[str, Any]) -> None:
+        event_id = str(req.get("event_id") or "")
+        if not event_id:
+            self.stats["dropped"] += 1
+            return
+        if runtime_disabled():
+            self.stats["dropped"] += 1
+            self.recent.append(recent_entry(req, "drop-runtime-disabled"))
+            self.write_status()
+            return
+        if event_disabled_by_patterns(event_id, self.config.get("disabled_events", [])):
+            self.stats["dropped"] += 1
+            self.recent.append(recent_entry(req, "drop-disabled"))
+            self.write_status()
+            return
+        if event_id not in self.config["events"]:
+            self.stats["dropped"] += 1
+            self.recent.append(recent_entry(req, "drop-unknown"))
+            self.write_status()
+            return
+        meta = event_meta(self.config, event_id)
+        priority = str(meta.get("priority", "normal"))
+        req["_priority"] = priority if priority in PRIORITY_RANK else "normal"
+        req["_rank"] = PRIORITY_RANK.get(req["_priority"], 1)
+
+        with self.cv:
+            key = request_key(req)
+            for idx, old in enumerate(list(self.queue)):
+                if request_key(old) == key:
+                    del self.queue[idx]
+                    break
+
+            max_queue = int(self.config.get("max_queue", 32))
+            if len(self.queue) >= max_queue:
+                if req["_priority"] == "low":
+                    self.stats["dropped"] += 1
+                    self.recent.append(recent_entry(req, "drop-queue-low"))
+                    self.write_status()
+                    return
+                for idx, old in enumerate(list(self.queue)):
+                    if old.get("_priority") == "low":
+                        del self.queue[idx]
+                        self.stats["dropped"] += 1
+                        break
+                else:
+                    self.stats["dropped"] += 1
+                    self.recent.append(recent_entry(req, "drop-queue-full"))
+                    self.write_status()
+                    return
+
+            self.queue.append(req)
+            self.queue = deque(sorted(self.queue, key=lambda item: item.get("_rank", 1)))
+            self.stats["enqueued"] += 1
+            self.write_status()
+            self.cv.notify()
+
+    def should_fire(self, req: dict[str, Any], meta: dict[str, Any]) -> tuple[bool, str]:
+        event_id = str(req.get("event_id", ""))
+        priority = str(meta.get("priority", "normal"))
+        force = bool(req.get("force", False) or meta.get("force", False))
+        caller_pid = clamp_int(req.get("caller_pid"), 0, 10_000_000, 0)
+
+        if not force and active_window_contains(caller_pid):
+            return False, "focus"
+
+        now = time.monotonic()
+        cooldown = self.config["global_cooldown_sec"].get(priority, GLOBAL_DEFAULTS.get(priority, 8))
+        global_age = now - self.last_global.get(priority, 0)
+        if global_age < cooldown:
+            return False, f"global-cooldown-{priority}"
+
+        throttle = clamp_int(req.get("throttle_sec"), 0, 3600, clamp_int(meta.get("throttle"), 0, 3600, 20))
+        key = request_key(req)
+        event_age = now - self.last_event.get(key, 0)
+        if throttle and event_age < throttle:
+            return False, "event-throttle"
+        return True, "ok"
+
+    def mark_fire(self, req: dict[str, Any], meta: dict[str, Any]) -> None:
+        priority = str(meta.get("priority", "normal"))
+        now = time.monotonic()
+        self.last_global[priority] = now
+        self.last_event[request_key(req)] = now
+
+    def play_voice(self, event_id: str, meta: dict[str, Any]) -> None:
+        if not bool(meta.get("voice", False)):
+            return
+        cfg = load_json(VOICE_CFG, {})
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return
+        silent = cfg.get("silent_events", [])
+        if isinstance(silent, list) and event_id in silent:
+            return
+        if not voice_schedule_ok(cfg):
+            return
+
+        cooldown_default = 45 if meta.get("priority") == "critical" else 120
+        cooldown = clamp_int(cfg.get("voice_cooldown_sec"), 0, 3600, cooldown_default)
+        now = time.monotonic()
+        if now - self.last_voice.get(event_id, 0) < cooldown:
+            return
+
+        voice_dir = Path(str(cfg.get("output_dir") or "")).expanduser()
+        audio = None
+        for suffix in (".mp3", ".wav"):
+            candidate = voice_dir / f"{event_id}{suffix}"
+            if candidate.exists():
+                audio = candidate
+                break
+        if not audio:
+            return
+
+        if DRY_RUN:
+            self.last_voice[event_id] = now
+            self.stats["voice_played"] += 1
+            log(f"dry-run voice {event_id}: {audio}")
+            return
+
+        player = None
+        args: list[str]
+        if audio.suffix == ".mp3" and shutil_which("ffplay"):
+            player = "ffplay"
+            args = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(audio)]
+        elif shutil_which("aplay"):
+            player = "aplay"
+            args = ["aplay", "-q", str(audio)]
+        else:
+            return
+
+        try:
+            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.last_voice[event_id] = now
+            self.stats["voice_played"] += 1
+            log(f"voice {event_id} via {player}")
+        except Exception as exc:
+            log(f"voice failed for {event_id}: {exc}")
+
+    def fire(self, req: dict[str, Any], meta: dict[str, Any]) -> None:
+        event_id = str(req.get("event_id", ""))
+        effect = str(meta.get("effect", "pulse"))
+        duration = clamp_int(meta.get("duration", meta.get("duration_sec")), 1, 30, 1)
+        zones = str(req.get("zones") or meta.get("zones") or "all").strip() or "all"
+        r, g, b = select_color(req, self.config, meta)
+
+        args = [
+            str(CLI),
+            "apply-color",
+            "--zones", zones,
+            "--rgb", f"{r},{g},{b}",
+            "--flash-duration", str(duration),
+            "--effect", effect,
+        ]
+        if DRY_RUN:
+            log(f"dry-run fire {event_id}: {' '.join(args)}")
+        else:
+            subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.mark_fire(req, meta)
+        self.stats["fired"] += 1
+        self.recent.append(recent_entry(
+            req,
+            "fired",
+            priority=meta.get("priority"),
+            zones=zones,
+            effect=effect,
+        ))
+        self.play_voice(event_id, meta)
+        self.write_status()
+
+    def worker_loop(self) -> None:
+        while not self.stop.is_set():
+            with self.cv:
+                while not self.queue and not self.stop.is_set():
+                    self.cv.wait(0.5)
+                if self.stop.is_set():
+                    return
+                req = self.queue.popleft()
+                self.write_status()
+
+            event_id = str(req.get("event_id", ""))
+            if runtime_disabled():
+                self.stats["dropped"] += 1
+                self.recent.append(recent_entry(req, "drop-runtime-disabled"))
+                self.write_status()
+                continue
+            meta = event_meta(self.config, event_id)
+            ok, reason = self.should_fire(req, meta)
+            if not ok:
+                self.stats["skipped"] += 1
+                self.recent.append(recent_entry(req, f"skip-{reason}"))
+                self.write_status()
+                continue
+            try:
+                self.fire(req, meta)
+            except Exception as exc:
+                self.stats["dropped"] += 1
+                self.recent.append(recent_entry(req, f"error-{exc}"))
+                self.write_status()
+                log(f"fire failed for {event_id}: {exc}")
+
+    def reader_loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                with FIFO.open("r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            req = json.loads(line)
+                        except json.JSONDecodeError:
+                            self.stats["dropped"] += 1
+                            continue
+                        if isinstance(req, dict):
+                            self.enqueue(req)
+            except FileNotFoundError:
+                self.install_fifo()
+            except Exception as exc:
+                if not self.stop.is_set():
+                    log(f"reader error: {exc}")
+                    time.sleep(0.5)
+
+    def heartbeat_loop(self) -> None:
+        while not self.stop.wait(STATUS_HEARTBEAT_SEC):
+            self.write_status()
+
+    def run(self) -> None:
+        self.install_fifo()
+        self.write_status()
+        log(f"up fifo={FIFO} events={len(self.config['events'])}")
+        worker = threading.Thread(target=self.worker_loop, name="rgb-broker-worker", daemon=True)
+        heartbeat = threading.Thread(target=self.heartbeat_loop, name="rgb-broker-heartbeat", daemon=True)
+        worker.start()
+        heartbeat.start()
+        self.reader_loop()
+
+    def shutdown(self) -> None:
+        self.stop.set()
+        with self.cv:
+            self.cv.notify_all()
+        self.write_status()
+
+
+def shutil_which(name: str) -> str | None:
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def doctor() -> int:
+    cfg = load_event_config()
+    voice = load_json(VOICE_CFG, {})
+    status = load_json(STATUS_PATH, {})
+    audio_count = 0
+    voice_enabled = False
+    if isinstance(voice, dict):
+        voice_enabled = bool(voice.get("enabled", False))
+        voice_dir = Path(str(voice.get("output_dir") or "")).expanduser()
+        if voice_dir.is_dir():
+            audio_count = len(list(voice_dir.glob("*.wav"))) + len(list(voice_dir.glob("*.mp3")))
+
+    checks = [
+        ("cli_executable", CLI.is_file() and os.access(CLI, os.X_OK), str(CLI)),
+        ("event_config", EVENT_CFG.is_file(), f"{EVENT_CFG} ({len(cfg['events'])} events)"),
+        ("voice_config", VOICE_CFG.is_file() and isinstance(voice, dict), str(VOICE_CFG)),
+        ("voice_audio_cache", (not voice_enabled) or audio_count > 0, "disabled" if not voice_enabled else f"{audio_count} files"),
+        ("fifo", FIFO.exists() and FIFO.is_fifo(), str(FIFO)),
+        ("status", isinstance(status, dict) and bool(status.get("pid")), str(STATUS_PATH)),
+    ]
+    ok = True
+    for name, passed, detail in checks:
+        ok = ok and passed
+        print(f"{'OK' if passed else 'NO'}  {name:18} {detail}")
+    if isinstance(status, dict) and status:
+        print(f"INFO queue_depth={status.get('queue_depth')} fired={status.get('fired')} skipped={status.get('skipped')} dropped={status.get('dropped')}")
+    return 0 if ok else 1
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in {"--doctor", "doctor"}:
+        return doctor()
+
+    broker = Broker()
+
+    def handle_signal(_signum: int, _frame: Any) -> None:
+        log("stopping")
+        broker.shutdown()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    broker.run()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

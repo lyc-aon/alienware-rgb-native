@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+COLLECT = ROOT / "scripts" / "collect-diagnostics"
+
+RAW_API_KEY = "sk-test_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+RAW_TOKEN = "tok_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+RAW_PASSWORD = "correct-horse-battery-staple"
+RAW_AUTH = "Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+RAW_HIGH_ENTROPY = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890abcdef"
+
+
+def write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def read_texts(root: Path) -> str:
+    parts: list[str] = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        parts.append(path.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(parts)
+
+
+def expect_redacted(path: Path, key: str) -> None:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get(key) != "[REDACTED]":
+        raise AssertionError(f"{path}: expected {key} to be redacted, got {data.get(key)!r}")
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="alienware-rgb-diagnostics-test.") as tmp_raw:
+        tmp = Path(tmp_raw)
+        config = tmp / "config"
+        out = tmp / "out"
+        run = tmp / "run"
+        out.mkdir()
+        run.mkdir()
+
+        write_json(config / "events.json", {
+            "events": [],
+            "nested": {"api_key": RAW_API_KEY},
+            "safe_label": "visible-label",
+        })
+        write_json(config / "runtime_events.json", {
+            "token": RAW_TOKEN,
+            "long_value": RAW_HIGH_ENTROPY,
+            "events": {},
+        })
+        write_json(config / "voice.json", {
+            "enabled": False,
+            "password": RAW_PASSWORD,
+            "phrases": {"unit": "safe phrase"},
+        })
+        write_json(config / "zone_map.json", {
+            "zones": [],
+            "auth_header": RAW_AUTH,
+        })
+        write_json(run / "rgb-event-broker.status.json", {
+            "pid": 123,
+            "queue_depth": 0,
+            "session_token": RAW_TOKEN,
+        })
+
+        env = os.environ.copy()
+        env.update({
+            "XDG_RUNTIME_DIR": str(run),
+            "ALIENWARE_RGB_DIAG_NO_JOURNAL": "1",
+        })
+        proc = subprocess.run(
+            [
+                str(COLLECT),
+                "--output", str(out),
+                "--config-dir", str(config),
+                "--cli", "/bin/false",
+                "--no-archive",
+                "--no-journal",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+            env=env,
+        )
+        if proc.returncode != 0:
+            raise AssertionError(f"collect-diagnostics failed:\nstdout={proc.stdout}\nstderr={proc.stderr}")
+
+        bundles = sorted(out.glob("alienware-rgb-diagnostics-*"))
+        if len(bundles) != 1:
+            raise AssertionError(f"expected one diagnostics bundle, found {len(bundles)}")
+        bundle = bundles[0]
+
+        expect_redacted(bundle / "config" / "voice.json", "password")
+        expect_redacted(bundle / "config" / "zone_map.json", "auth_header")
+        expect_redacted(bundle / "status" / "rgb-event-broker.status.json", "session_token")
+
+        all_text = read_texts(bundle)
+        for raw in (RAW_API_KEY, RAW_TOKEN, RAW_PASSWORD, RAW_AUTH, RAW_HIGH_ENTROPY):
+            if raw in all_text:
+                raise AssertionError(f"raw secret leaked into diagnostics bundle: {raw}")
+        if "[REDACTED]" not in all_text:
+            raise AssertionError("diagnostics bundle did not contain any redaction markers")
+        if not (bundle / "manifest.sha256").is_file():
+            raise AssertionError("diagnostics bundle missing manifest.sha256")
+        doctor_json = bundle / "status" / "doctor.json"
+        if not doctor_json.is_file():
+            raise AssertionError("diagnostics bundle missing status/doctor.json")
+        try:
+            json.loads(doctor_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AssertionError("status/doctor.json is not valid JSON") from exc
+
+        print("diagnostics redaction tests: passed")
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"diagnostics redaction tests failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)

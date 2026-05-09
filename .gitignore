@@ -1,0 +1,13 @@
+build/
+.cache/
+*.o
+*.so
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*_autogen/
+mocs_compilation.cpp
+__pycache__/
+*.pyc
+.venv/

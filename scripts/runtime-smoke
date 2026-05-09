@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_CLI="$(command -v alienware_rgb_cli 2>/dev/null || true)"
+CLI="${ALIENWARE_RGB_CLI:-${DEFAULT_CLI:-$HOME/bin/alienware_rgb_cli}}"
+RGB_PULSE="${RGB_PULSE:-$HOME/bin/rgb-pulse}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+STATUS_PATH="${RGB_BROKER_STATUS:-$RUNTIME_DIR/rgb-event-broker.status.json}"
+VISUAL_EVENTS="starter-circuit,starter-comet,starter-split-wave,starter-rainbow-cycle,starter-alert"
+RUNTIME_EVENT="starter-circuit"
+PAUSE_SEC="2"
+TIMEOUT_SEC="8"
+SKIP_DOCTOR=0
+SKIP_RUNTIME=0
+SKIP_VISUAL=0
+ALLOW_SKIP=0
+DRY_RUN=0
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/runtime-smoke [options]
+
+Runs a bounded production smoke check:
+  1. require `alienware_rgb_cli doctor --json` to be healthy
+  2. enqueue one runtime event through rgb-pulse and verify broker status
+  3. fire a camera-visible GUI event sequence through fire-event
+
+Options:
+  --cli PATH              alienware_rgb_cli path
+  --rgb-pulse PATH        rgb-pulse path
+  --status PATH           broker status JSON path
+  --runtime-event ID      runtime event to enqueue through rgb-pulse
+  --events CSV            visual fire-event sequence
+  --pause SEC             pause between visual events (default: 2)
+  --timeout SEC           broker wait timeout (default: 8)
+  --allow-skip            accept broker skip results, not only fired
+  --no-doctor             skip doctor precheck
+  --no-runtime            skip rgb-pulse/broker event check
+  --no-visual             skip fire-event visual sequence
+  --dry-run               print actions without firing lights
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cli) CLI="$2"; shift 2 ;;
+    --rgb-pulse) RGB_PULSE="$2"; shift 2 ;;
+    --status) STATUS_PATH="$2"; shift 2 ;;
+    --runtime-event) RUNTIME_EVENT="$2"; shift 2 ;;
+    --events) VISUAL_EVENTS="$2"; shift 2 ;;
+    --pause) PAUSE_SEC="$2"; shift 2 ;;
+    --timeout) TIMEOUT_SEC="$2"; shift 2 ;;
+    --allow-skip) ALLOW_SKIP=1; shift ;;
+    --no-doctor) SKIP_DOCTOR=1; shift ;;
+    --no-runtime) SKIP_RUNTIME=1; shift ;;
+    --no-visual) SKIP_VISUAL=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+log() {
+  printf '[runtime-smoke] %s\n' "$*"
+}
+
+require_executable() {
+  local path="$1" label="$2"
+  if [[ ! -x "$path" ]]; then
+    echo "runtime-smoke: $label is not executable: $path" >&2
+    exit 2
+  fi
+}
+
+require_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "runtime-smoke: jq is required" >&2
+    exit 2
+  fi
+}
+
+run_or_print() {
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '[runtime-smoke:dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+split_csv() {
+  local raw="$1"
+  local old_ifs="$IFS"
+  IFS=,
+  # shellcheck disable=SC2206
+  SPLIT_OUT=( $raw )
+  IFS="$old_ifs"
+}
+
+validate_number() {
+  local value="$1" label="$2"
+  if ! [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "runtime-smoke: $label must be numeric: $value" >&2
+    exit 2
+  fi
+}
+
+doctor_check() {
+  if [[ "$SKIP_DOCTOR" != "0" ]]; then
+    return 0
+  fi
+  log "doctor --json precheck"
+  local doctor_json
+  if ! doctor_json="$("$CLI" doctor --json)"; then
+    echo "runtime-smoke: doctor --json failed" >&2
+    exit 3
+  fi
+  if ! jq -e '.ok == true and .failures == 0' >/dev/null <<<"$doctor_json"; then
+    echo "runtime-smoke: doctor is not healthy" >&2
+    printf '%s\n' "$doctor_json" >&2
+    exit 3
+  fi
+}
+
+wait_for_broker_event() {
+  local event_id="$1"
+  local session="$2"
+  local before_seq="$3"
+  local deadline
+  deadline="$(python3 - "$TIMEOUT_SEC" <<'PY'
+import sys, time
+print(time.monotonic() + float(sys.argv[1]))
+PY
+)"
+  while python3 - "$deadline" <<'PY'
+import sys, time
+raise SystemExit(0 if time.monotonic() < float(sys.argv[1]) else 1)
+PY
+  do
+    if jq -e --arg event "$event_id" --arg session "$session" --argjson before "$before_seq" '
+      (.status_seq // 0) > $before
+      and ((.recent // []) | length > 0)
+      and any(.recent[]; (.event // "") == $event and (.session // "") == $session)
+    ' "$STATUS_PATH" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+runtime_check() {
+  if [[ "$SKIP_RUNTIME" != "0" ]]; then
+    return 0
+  fi
+  require_executable "$RGB_PULSE" "rgb-pulse"
+  if [[ ! -f "$STATUS_PATH" ]]; then
+    echo "runtime-smoke: broker status missing: $STATUS_PATH" >&2
+    exit 4
+  fi
+
+  local before_seq session result
+  before_seq="$(jq -r '.status_seq // 0' "$STATUS_PATH")"
+  session="runtime-smoke-$$-$(date +%s)"
+  log "enqueue runtime event $RUNTIME_EVENT via rgb-pulse"
+  run_or_print "$RGB_PULSE" "$RUNTIME_EVENT" --force --throttle 0 --session "$session"
+  [[ "$DRY_RUN" == "0" ]] || return
+
+  if ! wait_for_broker_event "$RUNTIME_EVENT" "$session" "$before_seq"; then
+    echo "runtime-smoke: broker did not report $RUNTIME_EVENT within ${TIMEOUT_SEC}s" >&2
+    jq '.recent[-5:] // []' "$STATUS_PATH" >&2 || true
+    exit 4
+  fi
+
+  result="$(jq -r --arg event "$RUNTIME_EVENT" --arg session "$session" '
+    [.recent[]? | select((.event // "") == $event and (.session // "") == $session)][-1].result // "missing"
+  ' "$STATUS_PATH")"
+  log "broker result for $RUNTIME_EVENT: $result"
+  if [[ "$result" != "fired" && "$ALLOW_SKIP" != "1" ]]; then
+    echo "runtime-smoke: expected broker result fired, got $result" >&2
+    exit 4
+  fi
+}
+
+visual_check() {
+  if [[ "$SKIP_VISUAL" != "0" ]]; then
+    return 0
+  fi
+  split_csv "$VISUAL_EVENTS"
+  for raw_event in "${SPLIT_OUT[@]}"; do
+    event_id="$(printf '%s' "$raw_event" | xargs)"
+    [[ -n "$event_id" ]] || continue
+    log "fire visual event $event_id"
+    run_or_print "$CLI" fire-event "$event_id"
+    [[ "$DRY_RUN" == "1" ]] || sleep "$PAUSE_SEC"
+  done
+}
+
+validate_number "$PAUSE_SEC" "--pause"
+validate_number "$TIMEOUT_SEC" "--timeout"
+require_jq
+require_executable "$CLI" "alienware_rgb_cli"
+
+doctor_check
+runtime_check
+visual_check
+
+log "smoke complete"

@@ -1,0 +1,124 @@
+{
+  "disabled_events": [],
+  "events": {
+    "starter-alert": {
+      "duration": 3,
+      "effect": "triple-blink",
+      "force": true,
+      "priority": "critical",
+      "rgb": [
+        255,
+        70,
+        40
+      ],
+      "throttle": 20,
+      "voice": false,
+      "zones": "all"
+    },
+    "starter-bounce": {
+      "duration": 4,
+      "effect": "bounce",
+      "force": false,
+      "priority": "normal",
+      "rgb": [
+        255,
+        80,
+        70
+      ],
+      "throttle": 12,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-circuit": {
+      "duration": 5,
+      "effect": "circuit",
+      "force": false,
+      "priority": "normal",
+      "rgb": [
+        0,
+        190,
+        255
+      ],
+      "throttle": 12,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-comet": {
+      "duration": 4,
+      "effect": "comet",
+      "force": false,
+      "priority": "normal",
+      "rgb": [
+        40,
+        255,
+        190
+      ],
+      "throttle": 12,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-plasma": {
+      "duration": 5,
+      "effect": "plasma",
+      "force": false,
+      "priority": "normal",
+      "rgb": [
+        150,
+        95,
+        255
+      ],
+      "throttle": 12,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-rainbow-cycle": {
+      "duration": 6,
+      "effect": "rainbow-cycle",
+      "force": false,
+      "priority": "low",
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "throttle": 30,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-split-wave": {
+      "duration": 5,
+      "effect": "split-wave",
+      "force": false,
+      "priority": "normal",
+      "rgb": [
+        255,
+        205,
+        60
+      ],
+      "throttle": 12,
+      "voice": false,
+      "zones": "group:Side Panel Strip"
+    },
+    "starter-warmup": {
+      "duration": 4,
+      "effect": "warmup",
+      "force": true,
+      "priority": "low",
+      "rgb": [
+        0,
+        160,
+        255
+      ],
+      "throttle": 60,
+      "voice": false,
+      "zones": "all"
+    }
+  },
+  "global_cooldown_sec": {
+    "critical": 3,
+    "low": 20,
+    "normal": 8
+  },
+  "max_queue": 32,
+  "version": 1
+}

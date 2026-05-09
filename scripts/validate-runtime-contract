@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import runpy
+import sys
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent.parent
+EXPECTED_RUNTIME_IDS = {
+    "starter-alert",
+    "starter-bounce",
+    "starter-circuit",
+    "starter-comet",
+    "starter-plasma",
+    "starter-rainbow-cycle",
+    "starter-split-wave",
+    "starter-warmup",
+}
+ALLOWED_DISABLED_EVENTS: set[str] = set()
+PRIORITIES = {"critical", "normal", "low"}
+
+
+failures: list[str] = []
+
+
+def fail(message: str) -> None:
+    failures.append(message)
+
+
+def load_json(path: Path) -> Any:
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        fail(f"{path.relative_to(ROOT)}: {exc}")
+        return {}
+
+
+def int_in_range(value: Any, lo: int, hi: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
+
+
+def rgb_tuple(value: Any) -> tuple[int, int, int] | None:
+    if not isinstance(value, list) or len(value) != 3:
+        return None
+    if not all(int_in_range(v, 0, 255) for v in value):
+        return None
+    return int(value[0]), int(value[1]), int(value[2])
+
+
+def event_projection(meta: dict[str, Any], *, gui: bool = False) -> dict[str, Any]:
+    return {
+        "effect": str(meta.get("effect", "")).strip(),
+        "duration": meta.get("duration_sec" if gui else "duration"),
+        "zones": str(meta.get("zones", "all")).strip() or "all",
+        "rgb": rgb_tuple(meta.get("rgb")),
+    }
+
+
+def compare_projection(label: str, event_id: str, actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    for key in ("effect", "duration", "zones", "rgb"):
+        if actual.get(key) != expected.get(key):
+            fail(f"{label} {event_id}: {key}={actual.get(key)!r}, expected {expected.get(key)!r}")
+
+
+def validate_runtime_config(root: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if root.get("version") != 1:
+        fail("runtime_events.json: version must be 1")
+    if not int_in_range(root.get("max_queue"), 1, 256):
+        fail("runtime_events.json: max_queue must be 1..256")
+
+    cooldown = root.get("global_cooldown_sec")
+    if not isinstance(cooldown, dict):
+        fail("runtime_events.json: global_cooldown_sec must be an object")
+    else:
+        for key in PRIORITIES:
+            if not int_in_range(cooldown.get(key), 0, 300):
+                fail(f"runtime_events.json: global_cooldown_sec.{key} must be 0..300")
+
+    disabled = root.get("disabled_events", [])
+    if not isinstance(disabled, list):
+        fail("runtime_events.json: disabled_events must be an array")
+        disabled = []
+    disabled_set = {item for item in disabled if isinstance(item, str)}
+    unexpected_disabled = disabled_set - ALLOWED_DISABLED_EVENTS
+    if unexpected_disabled:
+        fail(f"runtime_events.json: unexpected disabled event patterns: {sorted(unexpected_disabled)}")
+
+    events = root.get("events")
+    if not isinstance(events, dict):
+        fail("runtime_events.json: events must be an object")
+        return {}
+    ids = set(events)
+    if ids != EXPECTED_RUNTIME_IDS:
+        fail(f"runtime_events.json: event ids {sorted(ids)} != expected {sorted(EXPECTED_RUNTIME_IDS)}")
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for event_id, raw in events.items():
+        if not isinstance(raw, dict):
+            fail(f"runtime_events.json: {event_id} must be an object")
+            continue
+        meta = event_projection(raw)
+        normalized[event_id] = meta
+        if not meta["effect"]:
+            fail(f"runtime_events.json: {event_id} effect is empty")
+        if not int_in_range(meta["duration"], 1, 600):
+            fail(f"runtime_events.json: {event_id} duration must be 1..600")
+        if raw.get("priority") not in PRIORITIES:
+            fail(f"runtime_events.json: {event_id} priority must be one of {sorted(PRIORITIES)}")
+        if not int_in_range(raw.get("throttle"), 0, 86400):
+            fail(f"runtime_events.json: {event_id} throttle must be 0..86400")
+        if not isinstance(raw.get("force"), bool):
+            fail(f"runtime_events.json: {event_id} force must be boolean")
+        if not isinstance(raw.get("voice"), bool):
+            fail(f"runtime_events.json: {event_id} voice must be boolean")
+        if not meta["zones"]:
+            fail(f"runtime_events.json: {event_id} zones is empty")
+        if meta["rgb"] is None:
+            fail(f"runtime_events.json: {event_id} rgb must be three integers 0..255")
+    return normalized
+
+
+def validate_gui_events(root: dict[str, Any], runtime: dict[str, dict[str, Any]]) -> None:
+    events = root.get("events")
+    if not isinstance(events, list):
+        fail("events.json: events must be an array")
+        return
+    ids: set[str] = set()
+    for raw in events:
+        if not isinstance(raw, dict):
+            fail("events.json: every entry must be an object")
+            continue
+        event_id = str(raw.get("id", "")).strip()
+        if not event_id:
+            fail("events.json: event id is empty")
+            continue
+        if event_id in ids:
+            fail(f"events.json: duplicate id {event_id}")
+        ids.add(event_id)
+        if event_id not in runtime:
+            fail(f"events.json: {event_id} is not in runtime_events.json")
+            continue
+        compare_projection("events.json", event_id, event_projection(raw, gui=True), runtime[event_id])
+    if ids != EXPECTED_RUNTIME_IDS:
+        fail(f"events.json: event ids {sorted(ids)} != expected {sorted(EXPECTED_RUNTIME_IDS)}")
+
+
+def validate_voice(root: dict[str, Any], runtime_root: dict[str, Any]) -> None:
+    phrases = root.get("phrases")
+    if not isinstance(phrases, dict):
+        fail("voice.json: phrases must be an object")
+        return
+    phrase_ids = {key for key, value in phrases.items() if isinstance(value, str) and value.strip()}
+    unknown_phrases = phrase_ids - EXPECTED_RUNTIME_IDS
+    if unknown_phrases:
+        fail(f"voice.json: unknown phrase ids {sorted(unknown_phrases)}")
+
+    runtime_events = runtime_root.get("events", {})
+    if isinstance(runtime_events, dict):
+        missing_voice = {
+            event_id
+            for event_id, meta in runtime_events.items()
+            if isinstance(meta, dict) and meta.get("voice") is True and event_id not in phrase_ids
+        }
+        if missing_voice:
+            fail(f"voice.json: runtime voice events missing phrases {sorted(missing_voice)}")
+
+    silent = root.get("silent_events", [])
+    if not isinstance(silent, list):
+        fail("voice.json: silent_events must be an array")
+    else:
+        unknown = {item for item in silent if isinstance(item, str)} - EXPECTED_RUNTIME_IDS
+        if unknown:
+            fail(f"voice.json: unknown silent_events {sorted(unknown)}")
+
+
+def validate_broker_defaults(runtime_root: dict[str, Any]) -> None:
+    ns = runpy.run_path(str(ROOT / "scripts" / "rgb-event-broker"))
+    broker_events = ns.get("DEFAULT_EVENTS")
+    if not isinstance(broker_events, dict):
+        fail("rgb-event-broker: DEFAULT_EVENTS must be an object")
+        return
+    if set(broker_events) != EXPECTED_RUNTIME_IDS:
+        fail(f"rgb-event-broker: DEFAULT_EVENTS ids {sorted(broker_events)} != expected")
+
+    runtime_events = runtime_root.get("events", {})
+    for event_id in EXPECTED_RUNTIME_IDS:
+        runtime_meta = runtime_events.get(event_id, {})
+        broker_meta = broker_events.get(event_id, {})
+        if not isinstance(runtime_meta, dict) or not isinstance(broker_meta, dict):
+            continue
+        for key in ("effect", "duration", "priority", "throttle", "force", "voice"):
+            if broker_meta.get(key) != runtime_meta.get(key):
+                fail(f"rgb-event-broker: {event_id} {key}={broker_meta.get(key)!r}, expected {runtime_meta.get(key)!r}")
+        compare_projection("rgb-event-broker", event_id, event_projection(broker_meta), event_projection(runtime_meta))
+
+    broker_colors = ns.get("DEFAULT_PREFIX_COLORS")
+    runtime_colors = runtime_root.get("prefix_colors", {})
+    if broker_colors != runtime_colors:
+        fail(f"rgb-event-broker: DEFAULT_PREFIX_COLORS {broker_colors!r} != runtime prefix_colors {runtime_colors!r}")
+
+
+def parse_rgb_pulse_table(path: Path) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    in_table = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip() == "EVENT_TABLE=(":
+            in_table = True
+            continue
+        if in_table and line.strip() == ")":
+            break
+        if not in_table:
+            continue
+        match = re.search(r'"([^"|]+)\|([^"|]+)\|([0-9]+)\|([01])"', line)
+        if not match:
+            continue
+        event_id, effect, duration, force = match.groups()
+        rows[event_id] = {
+            "effect": effect,
+            "duration": int(duration),
+            "force": force == "1",
+        }
+    return rows
+
+
+def validate_rgb_pulse(runtime_root: dict[str, Any]) -> None:
+    table = parse_rgb_pulse_table(ROOT / "scripts" / "rgb-pulse")
+    if set(table) != EXPECTED_RUNTIME_IDS:
+        fail(f"rgb-pulse: EVENT_TABLE ids {sorted(table)} != expected {sorted(EXPECTED_RUNTIME_IDS)}")
+    runtime_events = runtime_root.get("events", {})
+    for event_id in EXPECTED_RUNTIME_IDS:
+        runtime_meta = runtime_events.get(event_id, {})
+        pulse_meta = table.get(event_id, {})
+        if not isinstance(runtime_meta, dict):
+            continue
+        for key in ("effect", "duration", "force"):
+            if pulse_meta.get(key) != runtime_meta.get(key):
+                fail(f"rgb-pulse: {event_id} {key}={pulse_meta.get(key)!r}, expected {runtime_meta.get(key)!r}")
+
+
+def main() -> int:
+    runtime_root = load_json(ROOT / "config" / "runtime_events.json")
+    gui_root = load_json(ROOT / "config" / "events.json")
+    voice_root = load_json(ROOT / "config" / "voice.json")
+
+    if isinstance(runtime_root, dict):
+        runtime = validate_runtime_config(runtime_root)
+        if isinstance(gui_root, dict):
+            validate_gui_events(gui_root, runtime)
+        if isinstance(voice_root, dict):
+            validate_voice(voice_root, runtime_root)
+        validate_broker_defaults(runtime_root)
+        validate_rgb_pulse(runtime_root)
+
+    if failures:
+        print("runtime contract validation failed:", file=sys.stderr)
+        for item in failures:
+            print(f"- {item}", file=sys.stderr)
+        return 1
+    print("runtime contract validation: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

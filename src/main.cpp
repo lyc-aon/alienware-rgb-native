@@ -21,6 +21,9 @@ QString appStyleSheet() {
             selection-color: #FFFFFF;
         }
         QMainWindow, QDialog { background: #050505; }
+        QLabel {
+            background: transparent;
+        }
         QToolBar {
             background: #050505;
             border: none;
@@ -70,6 +73,7 @@ QString appStyleSheet() {
         }
         QPushButton:pressed { background: #111113; }
         QCheckBox {
+            background: transparent;
             color: #E4E4E7;
             spacing: 8px;
         }

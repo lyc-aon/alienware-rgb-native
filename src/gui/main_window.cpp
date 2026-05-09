@@ -40,34 +40,36 @@ QString configPath() {
 }
 
 constexpr const char* kGroupBoxStyle =
-    "QGroupBox { color: #94A3B8; font-size: 11px; font-weight: 700; letter-spacing: 1px; "
-    "border: 1px solid #1B2636; border-radius: 6px; margin-top: 10px; padding: 16px 10px 10px 10px; } "
-    "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; }";
+    "QGroupBox { color: #A1A1AA; font-size: 11px; font-weight: 600; "
+    "border: 1px solid #27272A; border-radius: 8px; margin-top: 11px; padding: 17px 10px 10px 10px; } "
+    "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; }";
 
 constexpr const char* kSecondaryButtonStyle =
-    "QPushButton { background: #111827; color: #E5E7EB; border: 1px solid #263244; "
-    "padding: 7px 10px; border-radius: 6px; font-weight: 600; }"
-    "QPushButton:hover { background: #18212F; border-color: #334155; }";
+    "QPushButton { background: #18181B; color: #F4F4F5; border: 1px solid #303033; "
+    "padding: 7px 11px; border-radius: 8px; font-weight: 500; }"
+    "QPushButton:hover { background: #222225; border-color: #3F3F46; }";
 
 constexpr const char* kPrimaryButtonStyle =
-    "QPushButton { background: #0E7490; color: #F8FAFC; border: 1px solid #22D3EE; "
-    "padding: 7px 14px; border-radius: 6px; font-weight: 700; }"
-    "QPushButton:hover { background: #0891B2; }";
+    "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; "
+    "padding: 7px 14px; border-radius: 8px; font-weight: 600; }"
+    "QPushButton:hover { background: #FFFFFF; }";
 
 constexpr const char* kSuccessButtonStyle =
-    "QPushButton { background: #16A34A; color: #F8FAFC; border: 1px solid #4ADE80; "
-    "font-weight: 700; padding: 8px 10px; border-radius: 6px; }"
-    "QPushButton:hover { background: #15803D; }";
+    "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; "
+    "font-weight: 600; padding: 8px 10px; border-radius: 8px; }"
+    "QPushButton:hover { background: #FFFFFF; }";
 
 constexpr const char* kInputStyle =
-    "QComboBox, QLineEdit { background: #0B0F14; color: #F8FAFC; padding: 5px 8px; "
-    "border: 1px solid #263244; border-radius: 5px; }"
-    "QComboBox:focus, QLineEdit:focus { border-color: #22D3EE; }";
+    "QComboBox, QLineEdit { background: #161616; color: #F4F4F5; padding: 6px 9px; "
+    "border: 1px solid #303033; border-radius: 8px; }"
+    "QComboBox:focus, QLineEdit:focus { border-color: #5B7CFA; }";
 
-QString statusStyle(const QString& background, const QString& border = QStringLiteral("#263244")) {
-    return QString("font-size: 13px; padding: 6px 12px; background: %1; color: #F8FAFC; "
-                   "border: 1px solid %2; border-radius: 6px;")
-        .arg(background, border);
+QString statusStyle(const QString& background,
+                    const QString& border = QStringLiteral("#303033"),
+                    const QString& color = QStringLiteral("#E4E4E7")) {
+    return QString("font-size: 13px; padding: 6px 12px; background: %1; color: %3; "
+                   "border: 1px solid %2; border-radius: 8px;")
+        .arg(background, border, color);
 }
 
 // Small preset palette for the swatch row.
@@ -129,8 +131,8 @@ void MainWindow::setupUI() {
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
     toolbar->setStyleSheet(
-        "QToolBar { background: #05070A; border: none; border-bottom: 1px solid #18212F; padding: 6px 10px; } "
-        "QToolBar QLabel { color: #E5E7EB; }"
+        "QToolBar { background: #050505; border: none; border-bottom: 1px solid #202020; padding: 7px 12px; } "
+        "QToolBar QLabel { color: #F4F4F5; }"
     );
 
     auto* brand = new QWidget(toolbar);
@@ -144,8 +146,8 @@ void MainWindow::setupUI() {
     icon_label->setPixmap(QIcon(QStringLiteral(":/icons/alienware-rgb.png")).pixmap(28, 28));
     brand_layout->addWidget(icon_label);
 
-    auto* title = new QLabel("ALIENWARE RGB", brand);
-    title->setStyleSheet("color: #22D3EE; font-size: 17px; font-weight: 700; letter-spacing: 1px; background: transparent;");
+    auto* title = new QLabel("Alienware RGB", brand);
+    title->setStyleSheet("color: #F4F4F5; font-size: 16px; font-weight: 650; background: transparent;");
     brand_layout->addWidget(title);
     toolbar->addWidget(brand);
 
@@ -154,17 +156,17 @@ void MainWindow::setupUI() {
     toolbar->addWidget(spacer);
 
     status_label_ = new QLabel("Disconnected", toolbar);
-    status_label_->setStyleSheet(statusStyle(QStringLiteral("#111827")));
+    status_label_->setStyleSheet(statusStyle(QStringLiteral("#18181B")));
     toolbar->addWidget(status_label_);
 
     toolbar->addSeparator();
 
-    auto* mute_btn = new QPushButton("Mute Voice", toolbar);
+    auto* mute_btn = new QPushButton("Mute voice", toolbar);
     mute_btn->setCheckable(true);
     mute_btn->setStyleSheet(
-        "QPushButton { background: #111827; color: #E5E7EB; border: 1px solid #263244; padding: 6px 14px; border-radius: 6px; font-weight: 600; }"
-        "QPushButton:hover { background: #18212F; }"
-        "QPushButton:checked { background: #7F1D1D; border-color: #F87171; color: #F8FAFC; }");
+        "QPushButton { background: #18181B; color: #F4F4F5; border: 1px solid #303033; padding: 6px 14px; border-radius: 8px; font-weight: 500; }"
+        "QPushButton:hover { background: #222225; }"
+        "QPushButton:checked { background: #2A1718; border-color: #7F3138; color: #FFD7DB; }");
     // Read current voice state
     {
         const QString vpath = alienwareConfigPath("voice.json");
@@ -173,11 +175,11 @@ void MainWindow::setupUI() {
             const auto vobj = QJsonDocument::fromJson(vf.readAll()).object();
             vf.close();
             mute_btn->setChecked(!vobj.value("enabled").toBool(true));
-            mute_btn->setText(mute_btn->isChecked() ? "Voice Muted" : "Mute Voice");
+            mute_btn->setText(mute_btn->isChecked() ? "Voice muted" : "Mute voice");
         }
     }
     connect(mute_btn, &QPushButton::toggled, this, [mute_btn](bool muted) {
-        mute_btn->setText(muted ? "Voice Muted" : "Mute Voice");
+        mute_btn->setText(muted ? "Voice muted" : "Mute voice");
         const QString vpath = alienwareConfigPath("voice.json");
         QFile vf(vpath);
         if (vf.open(QIODevice::ReadOnly)) {
@@ -193,12 +195,12 @@ void MainWindow::setupUI() {
     });
     toolbar->addWidget(mute_btn);
 
-    auto* events_btn = new QPushButton("Events…", toolbar);
+    auto* events_btn = new QPushButton("Events", toolbar);
     events_btn->setStyleSheet(kSecondaryButtonStyle);
     connect(events_btn, &QPushButton::clicked, this, &MainWindow::onOpenEvents);
     toolbar->addWidget(events_btn);
 
-    auto* discover_btn = new QPushButton("Discover Zones…", toolbar);
+    auto* discover_btn = new QPushButton("Discover zones", toolbar);
     discover_btn->setStyleSheet(kPrimaryButtonStyle);
     connect(discover_btn, &QPushButton::clicked, this, &MainWindow::onOpenDiscoveryWizard);
     toolbar->addWidget(discover_btn);
@@ -211,7 +213,7 @@ void MainWindow::setupUI() {
 
     toolbar->addSeparator();
 
-    auto* diagnostics_btn = new QPushButton("Diagnostics…", toolbar);
+    auto* diagnostics_btn = new QPushButton("Diagnostics", toolbar);
     diagnostics_btn->setStyleSheet(kSecondaryButtonStyle);
     connect(diagnostics_btn, &QPushButton::clicked, this, &MainWindow::onOpenDiagnostics);
     toolbar->addWidget(diagnostics_btn);
@@ -232,13 +234,13 @@ void MainWindow::setupUI() {
 
     auto* sidebar = new QWidget(sidebar_scroll);
     sidebar->setFixedWidth(260);
-    sidebar->setStyleSheet("background: #080C12; color: #E5E7EB;");
+    sidebar->setStyleSheet("background: #0D0D0D; color: #F4F4F5; border-right: 1px solid #202020;");
     auto* sidebar_layout = new QVBoxLayout(sidebar);
     sidebar_layout->setContentsMargins(12, 12, 12, 12);
     sidebar_layout->setSpacing(14);
 
     // ── COLOR section
-    auto* color_box = new QGroupBox("COLOR", sidebar);
+    auto* color_box = new QGroupBox("Color", sidebar);
     color_box->setStyleSheet(kGroupBoxStyle);
     auto* color_layout = new QVBoxLayout(color_box);
     color_layout->setSpacing(8);
@@ -257,7 +259,7 @@ void MainWindow::setupUI() {
         value_lbl = new QLabel("128");
         value_lbl->setFixedWidth(30);
         value_lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        value_lbl->setStyleSheet("color: #94A3B8; font-family: monospace;");
+        value_lbl->setStyleSheet("color: #A1A1AA; font-family: monospace;");
         row->addWidget(value_lbl);
         color_layout->addLayout(row);
     };
@@ -269,7 +271,7 @@ void MainWindow::setupUI() {
     auto* preview_row = new QHBoxLayout();
     color_preview_ = new QLabel(color_box);
     color_preview_->setFixedSize(60, 32);
-    color_preview_->setStyleSheet("background-color: rgb(128,128,128); border-radius: 6px; border: 1px solid #263244;");
+    color_preview_->setStyleSheet("background-color: rgb(128,128,128); border-radius: 8px; border: 1px solid #303033;");
     preview_row->addWidget(color_preview_);
     hex_input_ = new QLineEdit("#808080");
     hex_input_->setMaxLength(7);
@@ -296,8 +298,8 @@ void MainWindow::setupUI() {
         b->setFixedSize(22, 22);
         b->setToolTip(p.name);
         b->setStyleSheet(QString(
-            "QPushButton { background: rgb(%1,%2,%3); border: 1px solid #263244; border-radius: 11px; }"
-            "QPushButton:hover { border: 1px solid #22D3EE; }"
+            "QPushButton { background: rgb(%1,%2,%3); border: 1px solid #303033; border-radius: 11px; }"
+            "QPushButton:hover { border: 1px solid #A7B4FF; }"
         ).arg(p.r).arg(p.g).arg(p.b));
         connect(b, &QPushButton::clicked, this, [this, p] {
             r_slider_->setValue(p.r); g_slider_->setValue(p.g); b_slider_->setValue(p.b);
@@ -309,7 +311,7 @@ void MainWindow::setupUI() {
     sidebar_layout->addWidget(color_box);
 
     // ── BRIGHTNESS
-    auto* bright_box = new QGroupBox("BRIGHTNESS", sidebar);
+    auto* bright_box = new QGroupBox("Brightness", sidebar);
     bright_box->setStyleSheet(color_box->styleSheet());
     auto* bright_layout = new QVBoxLayout(bright_box);
     brightness_slider_ = new QSlider(Qt::Horizontal, bright_box);
@@ -318,20 +320,20 @@ void MainWindow::setupUI() {
     connect(brightness_slider_, &QSlider::valueChanged, this, &MainWindow::onBrightnessChanged);
     bright_layout->addWidget(brightness_slider_);
     bright_label_ = new QLabel("100%", bright_box);
-    bright_label_->setStyleSheet("color: #94A3B8; font-family: monospace;");
+    bright_label_->setStyleSheet("color: #A1A1AA; font-family: monospace;");
     bright_layout->addWidget(bright_label_);
     auto* note = new QLabel("Scales RGB output at send time (platform 0x0812).", bright_box);
     note->setWordWrap(true);
-    note->setStyleSheet("color: #64748B; font-size: 10px;");
+    note->setStyleSheet("color: #71717A; font-size: 10px;");
     bright_layout->addWidget(note);
 
     sidebar_layout->addWidget(bright_box);
 
     // ── ACTIONS
-    auto* action_box = new QGroupBox("ACTIONS", sidebar);
+    auto* action_box = new QGroupBox("Actions", sidebar);
     action_box->setStyleSheet(color_box->styleSheet());
     auto* action_layout = new QVBoxLayout(action_box);
-    auto* apply_btn = new QPushButton("Apply to Selected", action_box);
+    auto* apply_btn = new QPushButton("Apply to selected", action_box);
     apply_btn->setStyleSheet(kSuccessButtonStyle);
     connect(apply_btn, &QPushButton::clicked, this, [this] {
         applyColorToSelected(static_cast<uint8_t>(r_slider_->value()),
@@ -340,7 +342,7 @@ void MainWindow::setupUI() {
     });
     action_layout->addWidget(apply_btn);
 
-    auto* all_on_btn = new QPushButton("All On (Apply All)", action_box);
+    auto* all_on_btn = new QPushButton("All on", action_box);
     all_on_btn->setStyleSheet(kSecondaryButtonStyle);
     connect(all_on_btn, &QPushButton::clicked, this, [this] {
         applyColorToAll(static_cast<uint8_t>(r_slider_->value()),
@@ -349,7 +351,7 @@ void MainWindow::setupUI() {
     });
     action_layout->addWidget(all_on_btn);
 
-    auto* all_off_btn = new QPushButton("All Off", action_box);
+    auto* all_off_btn = new QPushButton("All off", action_box);
     all_off_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(all_off_btn, &QPushButton::clicked, this, [this] {
         worker_->enqueue([this] { worker_->controller().allOff(zone_count_); });
@@ -364,7 +366,7 @@ void MainWindow::setupUI() {
     sidebar_layout->addWidget(action_box);
 
     // ── GROUP ASSIGNMENT
-    auto* group_box = new QGroupBox("GROUP ASSIGNMENT", sidebar);
+    auto* group_box = new QGroupBox("Group assignment", sidebar);
     group_box->setStyleSheet(color_box->styleSheet());
     auto* group_layout = new QVBoxLayout(group_box);
 
@@ -373,7 +375,7 @@ void MainWindow::setupUI() {
     group_combo_->setStyleSheet(kInputStyle);
     group_layout->addWidget(group_combo_);
 
-    auto* assign_btn = new QPushButton("Assign Group", group_box);
+    auto* assign_btn = new QPushButton("Assign group", group_box);
     assign_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(assign_btn, &QPushButton::clicked, this, [this] {
         const QString g = group_combo_->currentText().trimmed();
@@ -382,7 +384,7 @@ void MainWindow::setupUI() {
     });
     group_layout->addWidget(assign_btn);
 
-    auto* select_btn = new QPushButton("Select Group", group_box);
+    auto* select_btn = new QPushButton("Select group", group_box);
     select_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(select_btn, &QPushButton::clicked, this, [this] {
         const QString g = group_combo_->currentText().trimmed();
@@ -390,7 +392,7 @@ void MainWindow::setupUI() {
     });
     group_layout->addWidget(select_btn);
 
-    auto* clear_btn = new QPushButton("Clear Group", group_box);
+    auto* clear_btn = new QPushButton("Clear group", group_box);
     clear_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(clear_btn, &QPushButton::clicked, this, [this] { clearGroupFromSelected(); });
     group_layout->addWidget(clear_btn);
@@ -398,7 +400,7 @@ void MainWindow::setupUI() {
     sidebar_layout->addWidget(group_box);
 
     // ── PROFILES
-    auto* profile_box = new QGroupBox("PROFILES", sidebar);
+    auto* profile_box = new QGroupBox("Profiles", sidebar);
     profile_box->setStyleSheet(color_box->styleSheet());
     auto* profile_layout = new QVBoxLayout(profile_box);
 
@@ -406,17 +408,17 @@ void MainWindow::setupUI() {
     profile_combo_->setStyleSheet(kInputStyle);
     profile_layout->addWidget(profile_combo_);
 
-    auto* save_profile_btn = new QPushButton("Save Current as Profile…", profile_box);
+    auto* save_profile_btn = new QPushButton("Save current as profile", profile_box);
     save_profile_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(save_profile_btn, &QPushButton::clicked, this, &MainWindow::onSaveProfile);
     profile_layout->addWidget(save_profile_btn);
 
-    auto* load_profile_btn = new QPushButton("Load Profile", profile_box);
+    auto* load_profile_btn = new QPushButton("Load profile", profile_box);
     load_profile_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(load_profile_btn, &QPushButton::clicked, this, &MainWindow::onLoadProfile);
     profile_layout->addWidget(load_profile_btn);
 
-    auto* delete_profile_btn = new QPushButton("Delete Profile", profile_box);
+    auto* delete_profile_btn = new QPushButton("Delete profile", profile_box);
     delete_profile_btn->setStyleSheet(all_on_btn->styleSheet());
     connect(delete_profile_btn, &QPushButton::clicked, this, &MainWindow::onDeleteProfile);
     profile_layout->addWidget(delete_profile_btn);
@@ -432,7 +434,10 @@ void MainWindow::setupUI() {
     zone_model_ = std::make_unique<ZoneListModel>(zone_map_);
 
     accordion_ = new ZoneAccordion(zone_model_.get(), &zone_map_, this);
-    accordion_->setStyleSheet("background: #05070A; color: #E5E7EB;");
+    accordion_->setObjectName("MainSurface");
+    accordion_->setStyleSheet(
+        "QWidget#MainSurface { background: #111113; color: #F4F4F5; border-left: 1px solid #27272A; "
+        "border-top-left-radius: 10px; border-bottom-left-radius: 10px; }");
     setCentralWidget(accordion_);
 
     connect(accordion_, &ZoneAccordion::selectionChanged, this,
@@ -575,7 +580,7 @@ void MainWindow::onColorSliderChanged(int) {
     const uint8_t r = static_cast<uint8_t>(r_slider_->value());
     const uint8_t g = static_cast<uint8_t>(g_slider_->value());
     const uint8_t b = static_cast<uint8_t>(b_slider_->value());
-    color_preview_->setStyleSheet(QString("background-color: rgb(%1,%2,%3); border-radius: 6px; border: 1px solid #263244;").arg(r).arg(g).arg(b));
+    color_preview_->setStyleSheet(QString("background-color: rgb(%1,%2,%3); border-radius: 8px; border: 1px solid #303033;").arg(r).arg(g).arg(b));
     if (hex_input_) {
         hex_input_->setText(QString("#%1%2%3")
                                 .arg(r, 2, 16, QChar('0'))
@@ -638,12 +643,12 @@ void MainWindow::onConnected(const QString& firmware, uint16_t platform, int zon
                                .arg(firmware)
                                .arg(platform, 4, 16, QChar('0'))
                                .arg(zone_count));
-    status_label_->setStyleSheet(statusStyle(QStringLiteral("#166534"), QStringLiteral("#4ADE80")));
+    status_label_->setStyleSheet(statusStyle(QStringLiteral("#18251D"), QStringLiteral("#2F5F3B"), QStringLiteral("#D6F7DE")));
 }
 
 void MainWindow::onDisconnected(const QString& reason) {
     status_label_->setText(QString("Disconnected: %1").arg(reason));
-    status_label_->setStyleSheet(statusStyle(QStringLiteral("#7F1D1D"), QStringLiteral("#F87171")));
+    status_label_->setStyleSheet(statusStyle(QStringLiteral("#2A1718"), QStringLiteral("#7F3138"), QStringLiteral("#FFD7DB")));
 }
 
 void MainWindow::onError(const QString& message) {

@@ -30,7 +30,7 @@ QPixmap buildSwatch(const QColor& c, int size = 16) {
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(QColor("#263244"), 1));
+    p.setPen(QPen(QColor("#303033"), 1));
     p.setBrush(c);
     p.drawRoundedRect(0, 0, size - 1, size - 1, 3, 3);
     return pm;
@@ -53,15 +53,15 @@ AccordionSection::AccordionSection(const QString& group_name,
     // content-alignment quirks).
     auto* header_widget = new QWidget(this);
     header_widget->setCursor(Qt::PointingHandCursor);
-    header_widget->setStyleSheet("QWidget { background: #0B0F14; border: 1px solid #1B2636; border-radius: 6px; } "
-                                  "QWidget:hover { background: #111827; border-color: #263244; }");
+    header_widget->setStyleSheet("QWidget { background: #161616; border: 1px solid #27272A; border-radius: 8px; } "
+                                  "QWidget:hover { background: #1D1D20; border-color: #3F3F46; }");
     auto* hrow = new QHBoxLayout(header_widget);
     hrow->setContentsMargins(10, 8, 10, 8);
     hrow->setSpacing(10);
 
     arrow_label_ = new QLabel(header_widget);
     arrow_label_->setFixedWidth(12);
-    arrow_label_->setStyleSheet("color: #94A3B8; font-weight: bold;");
+    arrow_label_->setStyleSheet("color: #A1A1AA; font-weight: bold;");
     hrow->addWidget(arrow_label_);
 
     swatch_ = new QLabel(header_widget);
@@ -71,13 +71,13 @@ AccordionSection::AccordionSection(const QString& group_name,
     hrow->addWidget(swatch_);
 
     title_label_ = new QLabel(group_name_, header_widget);
-    title_label_->setStyleSheet("color: #F8FAFC; font-weight: 600; font-size: 13px;");
+    title_label_->setStyleSheet("color: #F4F4F5; font-weight: 600; font-size: 13px;");
     hrow->addWidget(title_label_);
 
     hrow->addStretch();
 
     count_label_ = new QLabel(header_widget);
-    count_label_->setStyleSheet("color: #94A3B8; font-size: 12px;");
+    count_label_->setStyleSheet("color: #A1A1AA; font-size: 12px;");
     hrow->addWidget(count_label_);
 
     root->addWidget(header_widget);
@@ -179,7 +179,7 @@ void AccordionSection::updateArrow() {
 }
 
 QColor AccordionSection::averagedColor() const {
-    if (!zone_map_) return QColor("#334155");
+    if (!zone_map_) return QColor("#3F3F46");
     long r = 0, g = 0, b = 0;
     int n = 0;
     for (const Zone& z : zone_map_->allZones()) {
@@ -192,7 +192,7 @@ QColor AccordionSection::averagedColor() const {
             ++n;
         }
     }
-    if (n == 0) return QColor("#334155");
+    if (n == 0) return QColor("#3F3F46");
     return QColor(static_cast<int>(r / n), static_cast<int>(g / n), static_cast<int>(b / n));
 }
 
@@ -232,20 +232,22 @@ std::vector<int> AccordionSection::selectedZoneIds() const {
 
 ZoneAccordion::ZoneAccordion(ZoneListModel* model, ZoneMap* zone_map, QWidget* parent)
     : QWidget(parent), source_model_(model), zone_map_(zone_map) {
+    setAttribute(Qt::WA_StyledBackground, true);
+
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(14, 14, 14, 14);
-    root->setSpacing(10);
+    root->setContentsMargins(18, 18, 18, 18);
+    root->setSpacing(12);
 
     auto* header = new QFrame(this);
     header->setStyleSheet(
-        "QFrame { background: #080C12; border: 1px solid #1B2636; border-radius: 6px; }"
+        "QFrame { background: #161616; border: 1px solid #27272A; border-radius: 8px; }"
         "QLabel { background: transparent; }");
     auto* header_layout = new QHBoxLayout(header);
     header_layout->setContentsMargins(12, 10, 12, 10);
     header_layout->setSpacing(10);
 
     auto* heading = new QLabel("Zones", header);
-    heading->setStyleSheet("color: #F8FAFC; font-size: 16px; font-weight: 700;");
+    heading->setStyleSheet("color: #F4F4F5; font-size: 17px; font-weight: 650;");
     header_layout->addWidget(heading);
 
     const int zone_total = zone_map_ ? static_cast<int>(zone_map_->allZones().size()) : 0;
@@ -257,7 +259,7 @@ ZoneAccordion::ZoneAccordion(ZoneListModel* model, ZoneMap* zone_map, QWidget* p
     }
 
     auto* detail = new QLabel(QString("%1 total · %2 side-panel ordered").arg(zone_total).arg(side_panel_ordered), header);
-    detail->setStyleSheet("color: #94A3B8; font-size: 12px;");
+    detail->setStyleSheet("color: #A1A1AA; font-size: 12px;");
     header_layout->addWidget(detail);
     header_layout->addStretch();
     root->addWidget(header);
@@ -277,7 +279,7 @@ ZoneAccordion::ZoneAccordion(ZoneListModel* model, ZoneMap* zone_map, QWidget* p
     bar->addWidget(active_only_check_);
 
     count_badge_ = new QLabel(this);
-    count_badge_->setStyleSheet("color: #94A3B8; font-size: 12px; padding: 0 6px;");
+    count_badge_->setStyleSheet("color: #A1A1AA; font-size: 12px; padding: 0 6px;");
     bar->addWidget(count_badge_);
 
     root->addLayout(bar);

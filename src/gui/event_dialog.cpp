@@ -37,13 +37,13 @@ class EventCard : public QFrame {
 public:
     EventCard(const EventPreset& p, QWidget* parent = nullptr) : QFrame(parent), preset_(p) {
         setStyleSheet(
-            "EventCard { background: #0B0F14; border: 1px solid #1B2636; border-radius: 6px; }"
-            "QLineEdit, QSpinBox, QComboBox { background: #05070A; color: #F8FAFC; "
-            " padding: 5px 8px; border: 1px solid #263244; border-radius: 5px; }"
-            "QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #22D3EE; }"
-            "QLabel { color: #E5E7EB; }"
-            "QPushButton { background: #111827; color: #E5E7EB; border: 1px solid #263244; padding: 5px 10px; border-radius: 5px; }"
-            "QPushButton:hover { background: #18212F; border-color: #334155; }"
+            "EventCard { background: #161616; border: 1px solid #27272A; border-radius: 8px; }"
+            "QLineEdit, QSpinBox, QComboBox { background: #0D0D0D; color: #F4F4F5; "
+            " padding: 6px 9px; border: 1px solid #303033; border-radius: 8px; }"
+            "QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #5B7CFA; }"
+            "QLabel { color: #F4F4F5; background: transparent; }"
+            "QPushButton { background: #18181B; color: #F4F4F5; border: 1px solid #303033; padding: 6px 10px; border-radius: 8px; }"
+            "QPushButton:hover { background: #222225; border-color: #3F3F46; }"
         );
 
         auto* root = new QVBoxLayout(this);
@@ -62,14 +62,14 @@ public:
 
         auto* preview_btn = new QPushButton("▶ Preview", this);
         preview_btn->setStyleSheet(
-            "QPushButton { background: #16A34A; color: #F8FAFC; border: 1px solid #4ADE80; font-weight: 600; padding: 5px 10px; border-radius: 5px; }"
-            "QPushButton:hover { background: #15803D; }");
+            "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; font-weight: 600; padding: 6px 10px; border-radius: 8px; }"
+            "QPushButton:hover { background: #FFFFFF; }");
         connect(preview_btn, &QPushButton::clicked, this, [this] { emit previewRequested(this); });
         hdr->addWidget(preview_btn);
 
         auto* delete_btn = new QPushButton("Delete", this);
         delete_btn->setStyleSheet(
-            "QPushButton { background: #7F1D1D; border: 1px solid #F87171; color: #F8FAFC; } QPushButton:hover { background: #991B1B; }");
+            "QPushButton { background: #2A1718; border: 1px solid #7F3138; color: #FFD7DB; } QPushButton:hover { background: #3A1F22; }");
         connect(delete_btn, &QPushButton::clicked, this, [this] { emit deleted(this); });
         hdr->addWidget(delete_btn);
 
@@ -77,7 +77,7 @@ public:
 
         // summary
         summary_ = new QLabel(this);
-        summary_->setStyleSheet("color: #94A3B8; font-size: 12px;");
+        summary_->setStyleSheet("color: #A1A1AA; font-size: 12px;");
         root->addWidget(summary_);
 
         // body
@@ -203,7 +203,7 @@ private:
             g = std::clamp(parts[1].trimmed().toInt(), 0, 255);
             b = std::clamp(parts[2].trimmed().toInt(), 0, 255);
         }
-        swatch_->setStyleSheet(QString("background: rgb(%1,%2,%3); border: 1px solid #263244; border-radius: 4px;")
+        swatch_->setStyleSheet(QString("background: rgb(%1,%2,%3); border: 1px solid #303033; border-radius: 6px;")
                                    .arg(r).arg(g).arg(b));
     }
 
@@ -233,7 +233,7 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle("Events");
     setMinimumSize(720, 560);
     setModal(true);
-    setStyleSheet("QDialog { background: #05070A; }");
+    setStyleSheet("QDialog { background: #050505; }");
 
     seedDefaultEventsIfMissing();
 
@@ -242,13 +242,13 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
     root->setSpacing(10);
 
     // ── VOICE CONTROLS panel
-    auto* voice_box = new QGroupBox("VOICE NOTIFICATIONS", this);
+    auto* voice_box = new QGroupBox("Voice notifications", this);
     voice_box->setStyleSheet(
-        "QGroupBox { color: #94A3B8; font-size: 11px; font-weight: 700; letter-spacing: 1px; "
-        "border: 1px solid #1B2636; border-radius: 6px; margin-top: 10px; padding: 16px 10px 10px 10px; } "
-        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 6px; }"
-        "QLabel { color: #E5E7EB; } QCheckBox { color: #E5E7EB; } "
-        "QTimeEdit { background: #0B0F14; color: #F8FAFC; padding: 5px 8px; border: 1px solid #263244; border-radius: 5px; }");
+        "QGroupBox { color: #A1A1AA; font-size: 11px; font-weight: 600; "
+        "border: 1px solid #27272A; border-radius: 8px; margin-top: 11px; padding: 17px 10px 10px 10px; } "
+        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; }"
+        "QLabel { color: #F4F4F5; } QCheckBox { color: #E4E4E7; } "
+        "QTimeEdit { background: #161616; color: #F4F4F5; padding: 6px 9px; border: 1px solid #303033; border-radius: 8px; }");
     auto* voice_layout = new QVBoxLayout(voice_box);
     voice_layout->setSpacing(8);
 
@@ -272,7 +272,7 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
     voice_row1->addStretch();
 
     auto* mute_hint = new QLabel("Lights always fire. Voice respects this toggle + the schedule below.", voice_box);
-    mute_hint->setStyleSheet("color: #64748B; font-size: 11px;");
+    mute_hint->setStyleSheet("color: #71717A; font-size: 11px;");
     voice_row1->addWidget(mute_hint);
     voice_layout->addLayout(voice_row1);
 
@@ -296,7 +296,7 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
     voice_row2->addWidget(voice_end_time_);
 
     auto* sched_hint = new QLabel("(outside this window, voice is silent, lights still fire)", voice_box);
-    sched_hint->setStyleSheet("color: #64748B; font-size: 11px;");
+    sched_hint->setStyleSheet("color: #71717A; font-size: 11px;");
     voice_row2->addWidget(sched_hint);
     voice_row2->addStretch();
     voice_layout->addLayout(voice_row2);
@@ -305,10 +305,10 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
 
     // ── Top action row
     auto* top = new QHBoxLayout();
-    auto* add_btn = new QPushButton("+ Add Event", this);
+    auto* add_btn = new QPushButton("+ Add event", this);
     add_btn->setStyleSheet(
-        "QPushButton { background: #16A34A; color: #F8FAFC; border: 1px solid #4ADE80; font-weight: 700; padding: 8px 14px; border-radius: 6px; }"
-        "QPushButton:hover { background: #15803D; }");
+        "QPushButton { background: #18181B; color: #F4F4F5; border: 1px solid #303033; font-weight: 600; padding: 8px 14px; border-radius: 8px; }"
+        "QPushButton:hover { background: #222225; border-color: #3F3F46; }");
     connect(add_btn, &QPushButton::clicked, this, &EventDialog::onAddEvent);
     top->addWidget(add_btn);
 
@@ -317,7 +317,7 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
         "Use the ▶ Preview button on each card to audition it against the hardware.",
         this);
     hint->setWordWrap(true);
-    hint->setStyleSheet("color: #94A3B8; font-size: 12px; padding: 0 12px;");
+    hint->setStyleSheet("color: #A1A1AA; font-size: 12px; padding: 0 12px;");
     top->addWidget(hint, 1);
     root->addLayout(top);
 
@@ -339,8 +339,8 @@ EventDialog::EventDialog(QWidget* parent) : QDialog(parent) {
     bottom->addWidget(cancel_btn);
     auto* save_btn = new QPushButton("Save", this);
     save_btn->setStyleSheet(
-        "QPushButton { background: #0E7490; color: #F8FAFC; border: 1px solid #22D3EE; font-weight: 700; padding: 8px 14px; border-radius: 6px; }"
-        "QPushButton:hover { background: #0891B2; }");
+        "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; font-weight: 600; padding: 8px 14px; border-radius: 8px; }"
+        "QPushButton:hover { background: #FFFFFF; }");
     connect(save_btn, &QPushButton::clicked, this, &EventDialog::onSave);
     bottom->addWidget(save_btn);
     root->addLayout(bottom);

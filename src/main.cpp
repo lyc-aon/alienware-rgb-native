@@ -15,88 +15,88 @@ int g_sig_fd[2] = {-1, -1};
 QString appStyleSheet() {
     return QStringLiteral(R"(
         QWidget {
-            background: #05070A;
-            color: #E5E7EB;
-            selection-background-color: #0E7490;
-            selection-color: #F8FAFC;
+            background: #050505;
+            color: #F4F4F5;
+            selection-background-color: #2F6BFF;
+            selection-color: #FFFFFF;
         }
-        QMainWindow, QDialog { background: #05070A; }
+        QMainWindow, QDialog { background: #050505; }
         QToolBar {
-            background: #05070A;
+            background: #050505;
             border: none;
-            border-bottom: 1px solid #18212F;
+            border-bottom: 1px solid #202020;
             spacing: 8px;
-            padding: 6px 10px;
+            padding: 7px 12px;
         }
         QDockWidget {
-            background: #080C12;
+            background: #0D0D0D;
             border: none;
         }
         QGroupBox {
-            color: #94A3B8;
+            color: #A1A1AA;
             font-size: 11px;
-            font-weight: 700;
-            border: 1px solid #1B2636;
-            border-radius: 6px;
-            margin-top: 10px;
-            padding: 16px 10px 10px 10px;
+            font-weight: 600;
+            border: 1px solid #27272A;
+            border-radius: 8px;
+            margin-top: 11px;
+            padding: 17px 10px 10px 10px;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            padding: 0 6px;
+            padding: 0 8px;
         }
         QLineEdit, QComboBox, QSpinBox, QTimeEdit {
-            background: #0B0F14;
-            color: #F8FAFC;
-            border: 1px solid #263244;
-            border-radius: 5px;
-            padding: 5px 8px;
+            background: #161616;
+            color: #F4F4F5;
+            border: 1px solid #303033;
+            border-radius: 8px;
+            padding: 6px 9px;
         }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTimeEdit:focus {
-            border: 1px solid #22D3EE;
+            border: 1px solid #5B7CFA;
         }
         QPushButton {
-            background: #111827;
-            color: #E5E7EB;
-            border: 1px solid #263244;
-            border-radius: 6px;
+            background: #18181B;
+            color: #F4F4F5;
+            border: 1px solid #303033;
+            border-radius: 8px;
             padding: 6px 12px;
-            font-weight: 600;
+            font-weight: 500;
         }
         QPushButton:hover {
-            background: #18212F;
-            border-color: #334155;
+            background: #222225;
+            border-color: #3F3F46;
         }
-        QPushButton:pressed { background: #0B0F14; }
+        QPushButton:pressed { background: #111113; }
         QCheckBox {
-            color: #E5E7EB;
+            color: #E4E4E7;
             spacing: 8px;
         }
         QCheckBox::indicator {
             width: 14px;
             height: 14px;
-            border: 1px solid #263244;
-            border-radius: 3px;
-            background: #05070A;
+            border: 1px solid #3F3F46;
+            border-radius: 4px;
+            background: #111113;
         }
         QCheckBox::indicator:hover {
-            border-color: #22D3EE;
+            border-color: #5B7CFA;
         }
         QCheckBox::indicator:checked {
-            background: #0E7490;
-            border-color: #22D3EE;
+            background: #5B7CFA;
+            border-color: #8DA2FB;
         }
         QSlider::groove:horizontal {
             height: 4px;
-            background: #1B2636;
+            background: #2A2A2D;
             border-radius: 2px;
         }
         QSlider::handle:horizontal {
             width: 14px;
             margin: -5px 0;
-            background: #22D3EE;
-            border: 1px solid #67E8F9;
+            background: #A7B4FF;
+            border: 1px solid #D9DEFF;
             border-radius: 7px;
         }
         QScrollArea, QScrollArea > QWidget > QWidget, QListView {
@@ -104,20 +104,20 @@ QString appStyleSheet() {
             border: none;
         }
         QScrollBar:vertical {
-            background: #080C12;
+            background: #0D0D0D;
             width: 10px;
             margin: 0;
         }
         QScrollBar::handle:vertical {
-            background: #263244;
+            background: #3F3F46;
             border-radius: 5px;
             min-height: 28px;
         }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QToolTip {
-            background: #0B0F14;
-            color: #F8FAFC;
-            border: 1px solid #22D3EE;
+            background: #18181B;
+            color: #F4F4F5;
+            border: 1px solid #3F3F46;
             padding: 4px 6px;
         }
     )");
@@ -127,15 +127,15 @@ void applyCodexSurfaceStyle(QApplication& app) {
     app.setStyle(QStringLiteral("Fusion"));
 
     QPalette palette;
-    palette.setColor(QPalette::Window, QColor("#05070A"));
-    palette.setColor(QPalette::WindowText, QColor("#E5E7EB"));
-    palette.setColor(QPalette::Base, QColor("#0B0F14"));
-    palette.setColor(QPalette::AlternateBase, QColor("#111827"));
-    palette.setColor(QPalette::Text, QColor("#F8FAFC"));
-    palette.setColor(QPalette::Button, QColor("#111827"));
-    palette.setColor(QPalette::ButtonText, QColor("#E5E7EB"));
-    palette.setColor(QPalette::Highlight, QColor("#0E7490"));
-    palette.setColor(QPalette::HighlightedText, QColor("#F8FAFC"));
+    palette.setColor(QPalette::Window, QColor("#050505"));
+    palette.setColor(QPalette::WindowText, QColor("#F4F4F5"));
+    palette.setColor(QPalette::Base, QColor("#111113"));
+    palette.setColor(QPalette::AlternateBase, QColor("#18181B"));
+    palette.setColor(QPalette::Text, QColor("#F4F4F5"));
+    palette.setColor(QPalette::Button, QColor("#18181B"));
+    palette.setColor(QPalette::ButtonText, QColor("#F4F4F5"));
+    palette.setColor(QPalette::Highlight, QColor("#2F6BFF"));
+    palette.setColor(QPalette::HighlightedText, QColor("#FFFFFF"));
     app.setPalette(palette);
     app.setStyleSheet(appStyleSheet());
 }

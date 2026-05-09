@@ -22,9 +22,9 @@ namespace {
 
 QString buttonStyle(const QString& background, const QString& border) {
     return QString(
-        "QPushButton { background: %1; color: #F8FAFC; border: 1px solid %2; "
-        "font-weight: 700; padding: 8px 14px; border-radius: 6px; }"
-        "QPushButton:hover { background: #0891B2; }")
+        "QPushButton { background: %1; color: #F4F4F5; border: 1px solid %2; "
+        "font-weight: 600; padding: 8px 14px; border-radius: 8px; }"
+        "QPushButton:hover { background: #222225; border-color: #3F3F46; }")
         .arg(background, border);
 }
 
@@ -35,10 +35,10 @@ QTableWidgetItem* item(const QString& text) {
 }
 
 QString statusColor(const QString& status) {
-    if (status == "ok") return "#4ADE80";
-    if (status == "warn") return "#FBBF24";
-    if (status == "fail") return "#F87171";
-    return "#94A3B8";
+    if (status == "ok") return "#7DD891";
+    if (status == "warn") return "#F8C96A";
+    if (status == "fail") return "#FF8A94";
+    return "#A1A1AA";
 }
 
 }  // namespace
@@ -48,11 +48,11 @@ DiagnosticsDialog::DiagnosticsDialog(QWidget* parent) : QDialog(parent) {
     setMinimumSize(840, 620);
     setModal(false);
     setStyleSheet(
-        "QDialog { background: #05070A; }"
-        "QLabel { color: #E5E7EB; }"
-        "QTableWidget { background: #0B0F14; color: #E5E7EB; border: 1px solid #1B2636; border-radius: 6px; gridline-color: #1B2636; }"
-        "QHeaderView::section { background: #111827; color: #CBD5E1; border: none; border-bottom: 1px solid #263244; padding: 6px; font-weight: 700; }"
-        "QPlainTextEdit { background: #0B0F14; color: #CBD5E1; border: 1px solid #1B2636; border-radius: 6px; padding: 8px; font-family: monospace; }");
+        "QDialog { background: #050505; }"
+        "QLabel { color: #F4F4F5; }"
+        "QTableWidget { background: #111113; color: #F4F4F5; border: 1px solid #27272A; border-radius: 8px; gridline-color: #27272A; }"
+        "QHeaderView::section { background: #18181B; color: #D4D4D8; border: none; border-bottom: 1px solid #303033; padding: 7px; font-weight: 600; }"
+        "QPlainTextEdit { background: #111113; color: #D4D4D8; border: 1px solid #27272A; border-radius: 8px; padding: 9px; font-family: monospace; }");
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(16, 16, 16, 16);
@@ -60,20 +60,25 @@ DiagnosticsDialog::DiagnosticsDialog(QWidget* parent) : QDialog(parent) {
 
     auto* top = new QHBoxLayout();
     summary_label_ = new QLabel("Health: not checked", this);
-    summary_label_->setStyleSheet("color: #94A3B8; font-weight: 700;");
+    summary_label_->setStyleSheet("color: #A1A1AA; font-weight: 600;");
     top->addWidget(summary_label_, 1);
 
     refresh_health_btn_ = new QPushButton("Refresh Health", this);
-    refresh_health_btn_->setStyleSheet(buttonStyle("#0E7490", "#22D3EE"));
+    refresh_health_btn_->setText("Refresh health");
+    refresh_health_btn_->setStyleSheet(
+        "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; font-weight: 600; padding: 8px 14px; border-radius: 8px; }"
+        "QPushButton:hover { background: #FFFFFF; }");
     connect(refresh_health_btn_, &QPushButton::clicked, this, &DiagnosticsDialog::refreshHealth);
     top->addWidget(refresh_health_btn_);
 
     runtime_status_btn_ = new QPushButton("Runtime Status", this);
+    runtime_status_btn_->setText("Runtime status");
     connect(runtime_status_btn_, &QPushButton::clicked, this, &DiagnosticsDialog::refreshRuntime);
     top->addWidget(runtime_status_btn_);
 
     collect_bundle_btn_ = new QPushButton("Collect Bundle", this);
-    collect_bundle_btn_->setStyleSheet(buttonStyle("#16A34A", "#4ADE80"));
+    collect_bundle_btn_->setText("Collect bundle");
+    collect_bundle_btn_->setStyleSheet(buttonStyle("#18181B", "#303033"));
     connect(collect_bundle_btn_, &QPushButton::clicked, this, &DiagnosticsDialog::collectBundle);
     top->addWidget(collect_bundle_btn_);
     root->addLayout(top);
@@ -167,7 +172,7 @@ void DiagnosticsDialog::setBusy(bool busy, const QString& label) {
     collect_bundle_btn_->setEnabled(!busy);
     if (busy) {
         summary_label_->setText("Running: " + label);
-        summary_label_->setStyleSheet("color: #22D3EE; font-weight: 700;");
+        summary_label_->setStyleSheet("color: #A7B4FF; font-weight: 600;");
     }
 }
 
@@ -179,7 +184,7 @@ void DiagnosticsDialog::onProcessFinished(int exit_code, QProcess::ExitStatus ex
     if (exit_status != QProcess::NormalExit) {
         renderOutput(active_title_, exit_code, stdout_bytes, stderr_bytes + "\nprocess crashed");
         summary_label_->setText("Health: command crashed");
-        summary_label_->setStyleSheet("color: #F87171; font-weight: 700;");
+        summary_label_->setStyleSheet("color: #FF8A94; font-weight: 600;");
     } else if (active_task_ == Task::Doctor) {
         renderDoctorJson(stdout_bytes);
         if (!stderr_bytes.trimmed().isEmpty()) output_text_->appendPlainText("\nstderr:\n" + QString::fromUtf8(stderr_bytes));
@@ -187,7 +192,7 @@ void DiagnosticsDialog::onProcessFinished(int exit_code, QProcess::ExitStatus ex
         renderOutput(active_title_, exit_code, stdout_bytes, stderr_bytes);
         if (active_task_ == Task::CollectBundle && exit_code == 0) {
             summary_label_->setText("Bundle: created");
-            summary_label_->setStyleSheet("color: #4ADE80; font-weight: 700;");
+            summary_label_->setStyleSheet("color: #7DD891; font-weight: 600;");
         }
     }
 
@@ -200,7 +205,7 @@ void DiagnosticsDialog::onProcessError(QProcess::ProcessError) {
     const QString msg = process_ ? process_->errorString() : QString("unknown process error");
     output_text_->setPlainText(msg);
     summary_label_->setText("Health: command failed");
-    summary_label_->setStyleSheet("color: #F87171; font-weight: 700;");
+    summary_label_->setStyleSheet("color: #FF8A94; font-weight: 600;");
 }
 
 void DiagnosticsDialog::renderDoctorJson(const QByteArray& json_bytes) {
@@ -210,7 +215,7 @@ void DiagnosticsDialog::renderDoctorJson(const QByteArray& json_bytes) {
         checks_table_->setRowCount(0);
         output_text_->setPlainText(QString::fromUtf8(json_bytes));
         summary_label_->setText("Health: invalid doctor output");
-        summary_label_->setStyleSheet("color: #F87171; font-weight: 700;");
+        summary_label_->setStyleSheet("color: #FF8A94; font-weight: 600;");
         return;
     }
 
@@ -233,7 +238,7 @@ void DiagnosticsDialog::renderDoctorJson(const QByteArray& json_bytes) {
 
     summary_label_->setText(QString("Health: %1 · %2 failure(s) · %3 warning(s)")
                                 .arg(ok ? "OK" : "Attention", QString::number(failures), QString::number(warnings)));
-    summary_label_->setStyleSheet(QString("color: %1; font-weight: 700;").arg(ok ? "#4ADE80" : "#F87171"));
+    summary_label_->setStyleSheet(QString("color: %1; font-weight: 600;").arg(ok ? "#7DD891" : "#FF8A94"));
     output_text_->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
 }
 
@@ -248,5 +253,5 @@ void DiagnosticsDialog::renderOutput(const QString& title, int exit_code, const 
     }
     output_text_->setPlainText(text);
     summary_label_->setText(QString("%1: exit %2").arg(title, QString::number(exit_code)));
-    summary_label_->setStyleSheet(QString("color: %1; font-weight: 700;").arg(exit_code == 0 ? "#4ADE80" : "#F87171"));
+    summary_label_->setStyleSheet(QString("color: %1; font-weight: 600;").arg(exit_code == 0 ? "#7DD891" : "#FF8A94"));
 }

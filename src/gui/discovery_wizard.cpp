@@ -43,6 +43,18 @@ DiscoveryWizard::DiscoveryWizard(ZoneMap* zone_map, HIDWorker* worker, QWidget* 
     setMinimumWidth(520);
     setMinimumHeight(440);
     setModal(true);
+    setStyleSheet(
+        "QDialog { background: #050505; }"
+        "QLabel { color: #F4F4F5; }"
+        "QGroupBox { color: #A1A1AA; font-size: 11px; font-weight: 600; border: 1px solid #27272A; "
+        "border-radius: 8px; margin-top: 11px; padding: 17px 10px 10px 10px; }"
+        "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 8px; }"
+        "QLineEdit, QComboBox { background: #161616; color: #F4F4F5; padding: 6px 9px; border: 1px solid #303033; border-radius: 8px; }"
+        "QLineEdit:focus, QComboBox:focus { border-color: #5B7CFA; }"
+        "QProgressBar { background: #161616; color: #A1A1AA; border: 1px solid #27272A; border-radius: 8px; padding: 1px; text-align: center; }"
+        "QProgressBar::chunk { background: #A7B4FF; border-radius: 6px; }"
+        "QPushButton { background: #18181B; color: #F4F4F5; border: 1px solid #303033; padding: 7px 11px; border-radius: 8px; font-weight: 500; }"
+        "QPushButton:hover { background: #222225; border-color: #3F3F46; }");
 
     setupUI();
     refreshDisplay();
@@ -53,9 +65,9 @@ void DiscoveryWizard::setupUI() {
     root->setSpacing(12);
     root->setContentsMargins(18, 18, 18, 18);
 
-    auto* heading = new QLabel("ZONE DISCOVERY WIZARD", this);
+    auto* heading = new QLabel("Zone discovery", this);
     heading->setAlignment(Qt::AlignCenter);
-    heading->setStyleSheet("color: #22D3EE; font-weight: 700; letter-spacing: 1px; font-size: 14px;");
+    heading->setStyleSheet("color: #F4F4F5; font-weight: 650; font-size: 18px;");
     root->addWidget(heading);
 
     auto* desc = new QLabel(
@@ -64,7 +76,7 @@ void DiscoveryWizard::setupUI() {
         "Mark zones as inactive if nothing visible changes.", this);
     desc->setAlignment(Qt::AlignCenter);
     desc->setWordWrap(true);
-    desc->setStyleSheet("color: #94A3B8;");
+    desc->setStyleSheet("color: #A1A1AA;");
     root->addWidget(desc);
 
     progress_bar_ = new QProgressBar(this);
@@ -73,7 +85,7 @@ void DiscoveryWizard::setupUI() {
 
     progress_label_ = new QLabel(this);
     progress_label_->setAlignment(Qt::AlignCenter);
-    progress_label_->setStyleSheet("color: #94A3B8;");
+    progress_label_->setStyleSheet("color: #A1A1AA;");
     root->addWidget(progress_label_);
 
     // Current zone group box
@@ -83,7 +95,7 @@ void DiscoveryWizard::setupUI() {
 
     zone_id_label_ = new QLabel(box);
     zone_id_label_->setAlignment(Qt::AlignCenter);
-    zone_id_label_->setStyleSheet("font-size: 28px; font-weight: 700; color: #22D3EE;");
+    zone_id_label_->setStyleSheet("font-size: 28px; font-weight: 650; color: #A7B4FF;");
     bl->addWidget(zone_id_label_);
 
     auto* label_row = new QHBoxLayout();
@@ -109,7 +121,7 @@ void DiscoveryWizard::setupUI() {
 
     // Quick actions row
     auto* quick = new QHBoxLayout();
-    auto* same_btn = new QPushButton("Same as Previous", this);
+    auto* same_btn = new QPushButton("Same as previous", this);
     same_btn->setToolTip("Copy label and group from the previous zone");
     connect(same_btn, &QPushButton::clicked, this, &DiscoveryWizard::onSameAsPrevious);
     quick->addWidget(same_btn);
@@ -119,7 +131,7 @@ void DiscoveryWizard::setupUI() {
     connect(retest_btn, &QPushButton::clicked, this, &DiscoveryWizard::onRetest);
     quick->addWidget(retest_btn);
 
-    auto* flash_btn = new QPushButton("Flash All Off", this);
+    auto* flash_btn = new QPushButton("Flash all off", this);
     flash_btn->setToolTip("Turn everything off briefly for contrast");
     connect(flash_btn, &QPushButton::clicked, this, &DiscoveryWizard::onFlashAllOff);
     quick->addWidget(flash_btn);
@@ -134,14 +146,14 @@ void DiscoveryWizard::setupUI() {
 
     nav->addStretch();
 
-    auto* skip_btn = new QPushButton("Skip (Inactive)", this);
+    auto* skip_btn = new QPushButton("Skip inactive", this);
     connect(skip_btn, &QPushButton::clicked, this, &DiscoveryWizard::onSkip);
     nav->addWidget(skip_btn);
 
     next_btn_ = new QPushButton("Next >", this);
     next_btn_->setStyleSheet(
-        "QPushButton { background: #0E7490; color: #F8FAFC; border: 1px solid #22D3EE; font-weight: 700; padding: 6px 14px; border-radius: 6px; }"
-        "QPushButton:hover { background: #0891B2; }");
+        "QPushButton { background: #E8EAFF; color: #111113; border: 1px solid #FFFFFF; font-weight: 600; padding: 7px 14px; border-radius: 8px; }"
+        "QPushButton:hover { background: #FFFFFF; }");
     connect(next_btn_, &QPushButton::clicked, this, &DiscoveryWizard::onNext);
     nav->addWidget(next_btn_);
 
@@ -149,13 +161,13 @@ void DiscoveryWizard::setupUI() {
 
     // Bottom row
     auto* bottom = new QHBoxLayout();
-    auto* save_btn = new QPushButton("Save && Close", this);
+    auto* save_btn = new QPushButton("Save and close", this);
     connect(save_btn, &QPushButton::clicked, this, &DiscoveryWizard::onSaveAndClose);
     bottom->addWidget(save_btn);
 
     bottom->addStretch();
 
-    auto* jump_btn = new QPushButton("Jump to Zone…", this);
+    auto* jump_btn = new QPushButton("Jump to zone", this);
     connect(jump_btn, &QPushButton::clicked, this, &DiscoveryWizard::onJumpToZone);
     bottom->addWidget(jump_btn);
 

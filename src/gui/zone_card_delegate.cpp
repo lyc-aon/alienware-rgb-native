@@ -17,13 +17,13 @@ void ZoneCardDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
     
     // Background based on selection state.
     bool selected = option.state & QStyle::State_Selected;
-    QColor bg_color = selected ? QColor("#0E7490") : QColor("#0B0F14");
-    QColor border_color = selected ? QColor("#22D3EE") : QColor("#1B2636");
+    QColor bg_color = selected ? QColor("#1E2B57") : QColor("#161616");
+    QColor border_color = selected ? QColor("#5B7CFA") : QColor("#27272A");
     
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(QPen(border_color, 1));
     painter->setBrush(bg_color);
-    painter->drawRoundedRect(rect, 6, 6);
+    painter->drawRoundedRect(rect, 8, 8);
     
     // Color swatch
     QColor zone_color = index.data(ZoneListModel::ColorRole).value<QColor>();
@@ -38,7 +38,7 @@ void ZoneCardDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
         label = QString("Zone %1").arg(zone_id);
     }
     
-    painter->setPen(QColor("#F8FAFC"));
+    painter->setPen(QColor("#F4F4F5"));
     QFont title_font = painter->font();
     title_font.setPointSize(10);
     title_font.setWeight(QFont::DemiBold);
@@ -48,7 +48,7 @@ void ZoneCardDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
     
     // Zone ID in smaller text
     int zone_id = index.data(ZoneListModel::ZoneIdRole).toInt();
-    painter->setPen(QColor("#CBD5E1"));
+    painter->setPen(QColor("#A1A1AA"));
     QFont meta_font = painter->font();
     meta_font.setPointSize(9);
     meta_font.setWeight(QFont::Normal);
@@ -60,7 +60,7 @@ void ZoneCardDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
     // Group name if present
     QString group = index.data(ZoneListModel::GroupRole).toString();
     if (!group.isEmpty()) {
-        painter->setPen(QColor("#4ADE80"));
+        painter->setPen(QColor("#A7B4FF"));
         painter->drawText(rect.adjusted(32, 50, -8, -8), 
                           Qt::AlignLeft | Qt::AlignVCenter, 
                           QString("Group: %1").arg(group));
@@ -69,7 +69,7 @@ void ZoneCardDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opti
     // Inactive badge
     bool active = index.data(ZoneListModel::ActiveRole).toBool();
     if (!active) {
-        painter->setPen(QColor(248, 250, 252, 130));
+        painter->setPen(QColor(244, 244, 245, 130));
         QFont inactive_font = painter->font();
         inactive_font.setPointSize(8);
         inactive_font.setItalic(true);
